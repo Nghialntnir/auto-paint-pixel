@@ -235,8 +235,20 @@ def pick_palette(n):
 
 
 # ------------------------------------------------------------- xu ly anh
-def quantize(img_path, grid, palette_rgb, dither):
-    """Map pixels only to the supplied palette; -1 marks letterbox cells."""
+def grid_for_box(box, max_cells):
+    """Return rectangular grid dimensions proportional to the selected box."""
+    x1, y1, x2, y2 = box
+    width, height = x2 - x1, y2 - y1
+    if width <= 0 or height <= 0:
+        raise ValueError("Vung ve phai co chieu rong va chieu cao lon hon 0.")
+    longest = max(width, height)
+    grid_w = max(1, round(max_cells * width / longest))
+    grid_h = max(1, round(max_cells * height / longest))
+    return grid_w, grid_h
+
+
+def quantize(img_path, grid_size, palette_rgb, dither):
+    """Resize the full image to the selected box's grid, then map to its palette."""
     _require_runtime_deps("numpy", "Pillow")
     if not palette_rgb:
         raise ValueError("Bang mau khong duoc de trong.")
@@ -244,40 +256,38 @@ def quantize(img_path, grid, palette_rgb, dither):
     if palette.ndim != 2 or palette.shape[1] != 3:
         raise ValueError("Moi mau trong bang mau phai co 3 gia tri RGB.")
 
+    grid_w, grid_h = grid_size
+    if grid_w <= 0 or grid_h <= 0:
+        raise ValueError("Luoi ve phai co chieu rong va chieu cao lon hon 0.")
     img = Image.open(img_path).convert("RGB")
-    img.thumbnail((grid, grid), Image.LANCZOS)  # giu ti le
-    w, h = img.size
+    img = img.resize((grid_w, grid_h), Image.LANCZOS)
 
     pixels = np.asarray(img, dtype=np.float32)
     if dither:
         work = pixels.copy()
-        q = np.empty((h, w), dtype=int)
-        for y in range(h):
-            for x in range(w):
+        q = np.empty((grid_h, grid_w), dtype=int)
+        for y in range(grid_h):
+            for x in range(grid_w):
                 old = work[y, x].copy()
                 ci = int(np.argmin(np.sum((palette - old) ** 2, axis=1)))
                 q[y, x] = ci
                 error = old - palette[ci]
-                if x + 1 < w:
+                if x + 1 < grid_w:
                     work[y, x + 1] += error * (7 / 16)
-                if y + 1 < h:
+                if y + 1 < grid_h:
                     if x > 0:
                         work[y + 1, x - 1] += error * (3 / 16)
                     work[y + 1, x] += error * (5 / 16)
-                    if x + 1 < w:
+                    if x + 1 < grid_w:
                         work[y + 1, x + 1] += error * (1 / 16)
     else:
-        q = np.empty((h, w), dtype=int)
-        for y in range(h):
+        q = np.empty((grid_h, grid_w), dtype=int)
+        for y in range(grid_h):
             distances = np.sum(
                 (pixels[y, :, None, :] - palette[None, :, :]) ** 2,
                 axis=2)
             q[y] = np.argmin(distances, axis=1)
-
-    out = -np.ones((grid, grid), dtype=int)
-    ox, oy = (grid - w) // 2, (grid - h) // 2
-    out[oy:oy + h, ox:ox + w] = q
-    return out
+    return q
 
 
 def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
@@ -314,8 +324,8 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
          click_hold=0.04):
     _require_runtime_deps("numpy", "pyautogui")
     x1, y1, x2, y2 = box
-    grid = idx.shape[0]
-    cw, ch = (x2 - x1) / grid, (y2 - y1) / grid
+    grid_h, grid_w = idx.shape
+    cw, ch = (x2 - x1) / grid_w, (y2 - y1) / grid_h
     todo = [c for c in range(n_colors)
             if c not in skip and np.any(idx == c)]
     draw_all = False
@@ -386,7 +396,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image")
     ap.add_argument("--grid", type=int, default=60,
-                    help="so o moi canh (60 => moi o ~10px voi khung 600)")
+                    help="so o tren canh dai nhat cua khung ve (mac dinh 60)")
     ap.add_argument("--colors", type=int, default=None,
                     help="so mau trong bang mau (1..256; mac dinh hoi, Enter = 12)")
     ap.add_argument("--dither", action="store_true", help="khu rang cua")
@@ -457,7 +467,9 @@ def main():
     if pts is None:
         manual = True
 
-    idx = quantize(a.image, a.grid, cols, a.dither)
+    grid_size = grid_for_box(box, a.grid)
+    print(f"Luoi ve: {grid_size[0]} x {grid_size[1]} o (rong x cao).")
+    idx = quantize(a.image, grid_size, cols, a.dither)
     save_preview(idx, cols)
     counts = np.bincount(idx[idx >= 0].astype(int), minlength=len(cols))
     used_colors = int(np.count_nonzero(counts))
