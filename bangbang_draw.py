@@ -5,8 +5,8 @@ Chay:     python bangbang_draw.py joker.jpg --grid 60 --dither
 
 Quy trinh:
   1. Keo tha chuot de chon khung ve (goc tren-trai -> goc duoi-phai)
-  2. Click lan luot len 10 o mau trong bang mau cua game (tool tu lay ma mau RGB)
-  3. Tool ep anh ve 10 mau do (mau gan nhat), luu preview.png de ban xem
+  2. Click lan luot len cac o mau trong bang mau cua game (tool tu lay ma mau RGB)
+  3. Tool gan pixel vao cac mau da lay, luu preview.png kem chu giai mau
   4. Xac nhan tung mau hoac chon ve tat ca; giu chuot moi click de Paint nhan on dinh
   5. Bam F12 bat ky luc nao trong khi ve de dung khan cap
 
@@ -46,9 +46,10 @@ except ImportError:  # pragma: no cover - GUI automation dependency is optional 
     pyautogui = None
 
 try:
-    from PIL import Image, ImageGrab, ImageTk
+    from PIL import Image, ImageDraw, ImageGrab, ImageTk
 except ImportError:  # pragma: no cover - image processing dependency is optional at import time.
     Image = None
+    ImageDraw = None
     ImageGrab = None
     ImageTk = None
 
@@ -235,19 +236,43 @@ def pick_palette(n):
 
 # ------------------------------------------------------------- xu ly anh
 def quantize(img_path, grid, palette_rgb, dither):
-    """Tra ve mang (grid x grid) chi so mau, -1 = o trong (letterbox)."""
+    """Map pixels only to the supplied palette; -1 marks letterbox cells."""
     _require_runtime_deps("numpy", "Pillow")
+    if not palette_rgb:
+        raise ValueError("Bang mau khong duoc de trong.")
+    palette = np.asarray(palette_rgb, dtype=np.float32)
+    if palette.ndim != 2 or palette.shape[1] != 3:
+        raise ValueError("Moi mau trong bang mau phai co 3 gia tri RGB.")
+
     img = Image.open(img_path).convert("RGB")
     img.thumbnail((grid, grid), Image.LANCZOS)  # giu ti le
     w, h = img.size
 
-    pal = Image.new("P", (1, 1))
-    flat = [c for rgb in palette_rgb for c in rgb]
-    flat += list(palette_rgb[0]) * (256 - len(palette_rgb))
-    pal.putpalette(flat)
-    method = Image.Dither.FLOYDSTEINBERG if dither else Image.Dither.NONE
-    q = np.array(img.quantize(palette=pal, dither=method))
-    q = np.clip(q, 0, len(palette_rgb) - 1)
+    pixels = np.asarray(img, dtype=np.float32)
+    if dither:
+        work = pixels.copy()
+        q = np.empty((h, w), dtype=int)
+        for y in range(h):
+            for x in range(w):
+                old = work[y, x].copy()
+                ci = int(np.argmin(np.sum((palette - old) ** 2, axis=1)))
+                q[y, x] = ci
+                error = old - palette[ci]
+                if x + 1 < w:
+                    work[y, x + 1] += error * (7 / 16)
+                if y + 1 < h:
+                    if x > 0:
+                        work[y + 1, x - 1] += error * (3 / 16)
+                    work[y + 1, x] += error * (5 / 16)
+                    if x + 1 < w:
+                        work[y + 1, x + 1] += error * (1 / 16)
+    else:
+        q = np.empty((h, w), dtype=int)
+        for y in range(h):
+            distances = np.sum(
+                (pixels[y, :, None, :] - palette[None, :, :]) ** 2,
+                axis=2)
+            q[y] = np.argmin(distances, axis=1)
 
     out = -np.ones((grid, grid), dtype=int)
     ox, oy = (grid - w) // 2, (grid - h) // 2
@@ -260,8 +285,28 @@ def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
     arr = np.full(idx.shape + (3,), 128, dtype=np.uint8)
     for i, c in enumerate(palette_rgb):
         arr[idx == i] = c
-    Image.fromarray(arr).resize(
-        (idx.shape[1] * zoom, idx.shape[0] * zoom), Image.NEAREST).save(path)
+    image = Image.fromarray(arr).resize(
+        (idx.shape[1] * zoom, idx.shape[0] * zoom), Image.NEAREST)
+
+    columns = min(6, len(palette_rgb))
+    rows = (len(palette_rgb) + columns - 1) // columns
+    cell_w, cell_h = 104, 28
+    legend_h = 12 + rows * cell_h
+    preview = Image.new(
+        "RGB", (max(image.width, columns * cell_w), image.height + legend_h),
+        "white")
+    preview.paste(image, (0, 0))
+    draw = ImageDraw.Draw(preview)
+    counts = np.bincount(idx[idx >= 0].astype(int),
+                         minlength=len(palette_rgb))
+    for i, color in enumerate(palette_rgb):
+        x = (i % columns) * cell_w + 6
+        y = image.height + 6 + (i // columns) * cell_h
+        swatch = tuple(int(channel) for channel in color)
+        draw.rectangle((x, y, x + 22, y + 19), fill=swatch, outline="black")
+        label = f"#{i + 1} {int(counts[i])}"
+        draw.text((x + 27, y + 3), label, fill="black")
+    preview.save(path)
 
 
 # ---------------------------------------------------------------- ve
@@ -280,7 +325,8 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
             print("\nDa dung khan cap (F12).")
             return
         ys, xs = np.where(idx == ci)
-        msg = f"\n[{k}/{len(todo)}] Mau #{ci + 1}: {len(xs)} diem."
+        msg = (f"\n[{k}/{len(todo)} mau co pixel; bang mau #{ci + 1}/"
+               f"{n_colors}]: {len(xs)} diem.")
         if manual:
             msg += "\n  >> Hay TU CHON mau nay trong game truoc."
         if draw_all:
@@ -342,7 +388,7 @@ def main():
     ap.add_argument("--grid", type=int, default=60,
                     help="so o moi canh (60 => moi o ~10px voi khung 600)")
     ap.add_argument("--colors", type=int, default=None,
-                    help="so mau trong bang mau (bo trong = tool se hoi)")
+                    help="so mau trong bang mau (1..256; mac dinh hoi, Enter = 12)")
     ap.add_argument("--dither", action="store_true", help="khu rang cua")
     ap.add_argument("--delay", type=float, default=0.001,
                     help="giay nghi giua 2 click (tang neu game bi sot)")
@@ -367,7 +413,9 @@ def main():
     cfg = {}
     if os.path.exists(CONFIG_FILE) and not a.recalibrate:
         cfg = json.load(open(CONFIG_FILE))
-        print("Dung lai cau hinh cu (them --recalibrate de chon lai).")
+        saved_colors = len(cfg.get("palette_rgb", []))
+        print(f"Dung lai cau hinh cu voi {saved_colors} mau "
+              "(them --colors N de doi so mau bang mau).")
     if "box" not in cfg:
         countdown(5, "B1: chon khung ve. Chuyen sang cua so game, "
                      "man hinh se duoc chup sau 5 giay...")
@@ -393,8 +441,11 @@ def main():
               and len(cfg.get("palette_rgb") or []) != a.colors)):
         n = a.colors
         while not n:
-            t = input("Game co bao nhieu mau? (Enter = 10): ").strip()
-            n = int(t) if t.isdigit() and int(t) > 0 else (10 if t == "" else None)
+            t = input("Game co bao nhieu mau? (Enter = 12): ").strip()
+            n = int(t) if t.isdigit() and int(t) > 0 else (12 if t == "" else None)
+            if n is not None and not 1 <= n <= 256:
+                print("  Nhap so mau tu 1 den 256.")
+                n = None
         countdown(5, f"B2: chon {n} mau. Chuyen sang cua so game, "
                      "man hinh se duoc chup sau 5 giay...")
         pts, cols = pick_palette(n)
@@ -408,7 +459,13 @@ def main():
 
     idx = quantize(a.image, a.grid, cols, a.dither)
     save_preview(idx, cols)
-    print("Da luu preview.png - mo xem thu truoc khi ve.")
+    counts = np.bincount(idx[idx >= 0].astype(int), minlength=len(cols))
+    used_colors = int(np.count_nonzero(counts))
+    print(f"Bang mau co {len(cols)} mau; anh su dung {used_colors} mau.")
+    for i, (rgb, count) in enumerate(zip(cols, counts), 1):
+        hex_color = "#{:02X}{:02X}{:02X}".format(*rgb)
+        print(f"  Mau #{i}: {hex_color} - {int(count)} diem")
+    print("Da luu preview.png voi mau RGB da lay va chu giai; mo xem truoc khi ve.")
 
     listener = _start_emergency_listener()
     try:
