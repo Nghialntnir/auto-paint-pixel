@@ -7,7 +7,7 @@ Quy trinh:
   1. Keo tha chuot de chon khung ve (goc tren-trai -> goc duoi-phai)
   2. Click lan luot len 10 o mau trong bang mau cua game (tool tu lay ma mau RGB)
   3. Tool ep anh ve 10 mau do (mau gan nhat), luu preview.png de ban xem
-  4. Xac nhan tung mau; giu chuot moi click de Paint nhan on dinh
+  4. Xac nhan tung mau hoac chon ve tat ca; giu chuot moi click de Paint nhan on dinh
   5. Bam F12 bat ky luc nao trong khi ve de dung khan cap
 
 Dung khan cap: day chuot vao GOC TREN-TRAI man hinh (pyautogui failsafe).
@@ -90,14 +90,14 @@ def countdown(sec, msg):
 
 
 def ask_yes(prompt):
-    """Tra ve 'y' (ve), 's' (bo qua) hoac 'q' (thoat)."""
+    """Tra ve 'y' (ve), 'a' (ve tat ca), 's' (bo qua) hoac 'q' (thoat)."""
     while True:
         a = _readline_or_stop(prompt)
         if a is None:
             return None
-        if a in ("y", "s", "q"):
+        if a in ("y", "a", "s", "q"):
             return a
-        print("  Chi nhap y / s / q.")
+        print("  Chi nhap y / a / s / q.")
 
 
 def _readline_or_stop(prompt):
@@ -273,6 +273,7 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
     cw, ch = (x2 - x1) / grid, (y2 - y1) / grid
     todo = [c for c in range(n_colors)
             if c not in skip and np.any(idx == c)]
+    draw_all = False
     for k, ci in enumerate(todo, 1):
         if STOP_EVENT.is_set():
             print("\nDa dung khan cap (F12).")
@@ -281,15 +282,23 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
         msg = f"\n[{k}/{len(todo)}] Mau #{ci + 1}: {len(xs)} diem."
         if manual:
             msg += "\n  >> Hay TU CHON mau nay trong game truoc."
-        ans = ask_yes(msg + "\n  Bam y = ve | s = bo qua mau nay | q = thoat: ")
-        if ans in (None, "q"):
-            if STOP_EVENT.is_set():
-                print("Da dung khan cap (F12).")
+        if draw_all:
+            print(msg + "\n  Tu dong ve (F12 = dung).")
+        else:
+            options = "y = ve | s = bo qua mau nay | q = thoat"
+            if not manual:
+                options += " | a = ve tat ca mau con lai"
+            ans = ask_yes(msg + "\n  Bam " + options + ": ")
+            if ans in (None, "q"):
+                if STOP_EVENT.is_set():
+                    print("Da dung khan cap (F12).")
+                    return
+                print("Da dung.")
                 return
-            print("Da dung.")
-            return
-        if ans == "s":
-            continue
+            if ans == "s":
+                continue
+            if ans == "a":
+                draw_all = True
         if not countdown(3, "  Quay lai cua so game..."):
             return
         if not manual:
@@ -409,7 +418,11 @@ def main():
         skip = {int(s) - 1} if s.isdigit() else set()
 
         total = int(np.sum(idx >= 0))
-        print(f"Tong ~{total} click. Moi mau se hoi y truoc khi ve.")
+        print(f"Tong ~{total} click.")
+        if manual:
+            print("Moi mau can chon thu cong; nhap y de ve, s de bo qua.")
+        else:
+            print("Moi mau se hoi y; nhap a de tu dong ve tat ca mau con lai.")
         draw(idx, box, pts, skip, a.delay, len(cols), manual, a.click_hold)
         if not STOP_EVENT.is_set():
             print("Hoan thanh.")
