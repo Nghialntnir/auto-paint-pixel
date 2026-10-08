@@ -1,0 +1,254 @@
+"""
+BangBang - Auto ve tranh pixel bang click
+Cai dat:  pip install pyautogui pillow numpy
+Chay:     python bangbang_draw.py anh.png --grid 60 --dither
+
+Quy trinh:
+  1. Keo tha chuot de chon khung ve (goc tren-trai -> goc duoi-phai)
+  2. Click lan luot len 10 o mau trong bang mau cua game (tool tu lay ma mau RGB)
+  3. Tool ep anh ve 10 mau do (mau gan nhat), luu preview.png de ban xem
+  4. Dem nguoc 5 giay -> tu click: chon mau 1 lan, roi click het cac o cua mau do
+
+Dung khan cap: day chuot vao GOC TREN-TRAI man hinh (pyautogui failsafe).
+"""
+import argparse
+import ctypes
+import json
+import os
+import sys
+import time
+import tkinter as tk
+
+import numpy as np
+import pyautogui
+from PIL import Image, ImageGrab, ImageTk
+
+# Windows: tranh lech toa do khi man hinh scale 125%/150%
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    pass
+
+pyautogui.FAILSAFE = True
+pyautogui.PAUSE = 0.0
+CONFIG_FILE = "bangbang_config.json"
+
+
+# ---------------------------------------------------------------- tien ich
+def countdown(sec, msg):
+    print(msg)
+    for i in range(sec, 0, -1):
+        print(f"  {i}...", end="\r", flush=True)
+        time.sleep(1)
+    print(" " * 20, end="\r")
+
+
+def ask_yes(prompt):
+    """Tra ve 'y' (ve), 's' (bo qua) hoac 'q' (thoat)."""
+    while True:
+        a = input(prompt).strip().lower()
+        if a in ("y", "s", "q"):
+            return a
+        print("  Chi nhap y / s / q.")
+
+
+# ---------------------------------------------------------------- UI chon vung
+def _overlay(title):
+    """Mo cua so toan man hinh co anh chup man hinh lam nen."""
+    shot = ImageGrab.grab()
+    root = tk.Tk()
+    root.attributes("-fullscreen", True)
+    root.attributes("-topmost", True)
+    root.update()
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    scale_x, scale_y = shot.width / sw, shot.height / sh
+    bg = ImageTk.PhotoImage(shot.resize((sw, sh)))
+    canvas = tk.Canvas(root, width=sw, height=sh, cursor="crosshair",
+                       highlightthickness=0)
+    canvas.pack()
+    canvas.create_image(0, 0, image=bg, anchor="nw")
+    canvas.create_rectangle(10, 10, 900, 50, fill="black")
+    canvas.create_text(20, 30, text=title, fill="yellow", anchor="w",
+                       font=("Arial", 14, "bold"))
+    root.bg = bg  # giu tham chieu
+    return root, canvas, shot, scale_x, scale_y
+
+
+def select_region():
+    root, canvas, shot, sx, sy = _overlay(
+        "KEO CHUOT tu goc TREN-TRAI den goc DUOI-PHAI khung ve (ESC = thoat)")
+    state = {"start": None, "rect": None, "box": None}
+
+    def down(e):
+        state["start"] = (e.x, e.y)
+        state["rect"] = canvas.create_rectangle(e.x, e.y, e.x, e.y,
+                                                outline="red", width=2)
+
+    def move(e):
+        if state["start"]:
+            x0, y0 = state["start"]
+            canvas.coords(state["rect"], x0, y0, e.x, e.y)
+
+    def up(e):
+        x0, y0 = state["start"]
+        x1, y1 = e.x, e.y
+        state["box"] = (int(min(x0, x1) * sx), int(min(y0, y1) * sy),
+                        int(max(x0, x1) * sx), int(max(y0, y1) * sy))
+        root.destroy()
+
+    canvas.bind("<ButtonPress-1>", down)
+    canvas.bind("<B1-Motion>", move)
+    canvas.bind("<ButtonRelease-1>", up)
+    root.bind("<Escape>", lambda e: sys.exit("Da huy."))
+    root.mainloop()
+    return state["box"]
+
+
+def pick_palette(n):
+    root, canvas, shot, sx, sy = _overlay(
+        f"CLICK lan luot {n} o mau trong bang mau cua game (ESC = thoat)")
+    points, colors = [], []
+
+    def click(e):
+        px, py = int(e.x * sx), int(e.y * sy)
+        rgb = shot.getpixel((px, py))[:3]
+        points.append((px, py))
+        colors.append(rgb)
+        canvas.create_oval(e.x - 6, e.y - 6, e.x + 6, e.y + 6,
+                           outline="red", width=2)
+        canvas.create_text(e.x + 12, e.y - 12, text=str(len(points)),
+                           fill="red", font=("Arial", 12, "bold"))
+        if len(points) >= n:
+            root.after(400, root.destroy)
+
+    canvas.bind("<Button-1>", click)
+    root.bind("<Escape>", lambda e: sys.exit("Da huy."))
+    root.mainloop()
+    return points, colors
+
+
+# ------------------------------------------------------------- xu ly anh
+def quantize(img_path, grid, palette_rgb, dither):
+    """Tra ve mang (grid x grid) chi so mau, -1 = o trong (letterbox)."""
+    img = Image.open(img_path).convert("RGB")
+    img.thumbnail((grid, grid), Image.LANCZOS)  # giu ti le
+    w, h = img.size
+
+    pal = Image.new("P", (1, 1))
+    flat = [c for rgb in palette_rgb for c in rgb]
+    flat += list(palette_rgb[0]) * (256 - len(palette_rgb))
+    pal.putpalette(flat)
+    method = Image.Dither.FLOYDSTEINBERG if dither else Image.Dither.NONE
+    q = np.array(img.quantize(palette=pal, dither=method))
+    q = np.clip(q, 0, len(palette_rgb) - 1)
+
+    out = -np.ones((grid, grid), dtype=int)
+    ox, oy = (grid - w) // 2, (grid - h) // 2
+    out[oy:oy + h, ox:ox + w] = q
+    return out
+
+
+def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
+    arr = np.full(idx.shape + (3,), 128, dtype=np.uint8)
+    for i, c in enumerate(palette_rgb):
+        arr[idx == i] = c
+    Image.fromarray(arr).resize(
+        (idx.shape[1] * zoom, idx.shape[0] * zoom), Image.NEAREST).save(path)
+
+
+# ---------------------------------------------------------------- ve
+def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False):
+    x1, y1, x2, y2 = box
+    grid = idx.shape[0]
+    cw, ch = (x2 - x1) / grid, (y2 - y1) / grid
+    todo = [c for c in range(n_colors)
+            if c not in skip and np.any(idx == c)]
+    for k, ci in enumerate(todo, 1):
+        ys, xs = np.where(idx == ci)
+        msg = f"\n[{k}/{len(todo)}] Mau #{ci + 1}: {len(xs)} diem."
+        if manual:
+            msg += "\n  >> Hay TU CHON mau nay trong game truoc."
+        ans = ask_yes(msg + "\n  Bam y = ve | s = bo qua mau nay | q = thoat: ")
+        if ans == "q":
+            print("Da dung.")
+            return
+        if ans == "s":
+            continue
+        countdown(3, "  Quay lai cua so game...")
+        if not manual:
+            px, py = palette_pts[ci]
+            pyautogui.click(px, py)  # chon mau
+            time.sleep(0.15)
+        for cy, cx in sorted(zip(ys, xs)):
+            pyautogui.click(int(x1 + (cx + 0.5) * cw),
+                            int(y1 + (cy + 0.5) * ch))
+            if delay:
+                time.sleep(delay)
+        print(f"  Xong mau #{ci + 1}.")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("image")
+    ap.add_argument("--grid", type=int, default=60,
+                    help="so o moi canh (60 => moi o ~10px voi khung 600)")
+    ap.add_argument("--colors", type=int, default=None,
+                    help="so mau trong bang mau (bo trong = tool se hoi)")
+    ap.add_argument("--dither", action="store_true", help="khu rang cua")
+    ap.add_argument("--delay", type=float, default=0.005,
+                    help="giay nghi giua 2 click (tang neu game bi sot)")
+    ap.add_argument("--manual", action="store_true",
+                    help="tu chon mau trong game, tool chi click diem")
+    ap.add_argument("--palette-hex", default=None,
+                    help='nhap tay bang mau, vd "ffffff,000000,ff0000,..." (tu bat --manual)')
+    ap.add_argument("--recalibrate", action="store_true",
+                    help="chon lai khung + bang mau")
+    a = ap.parse_args()
+
+    cfg = {}
+    if os.path.exists(CONFIG_FILE) and not a.recalibrate:
+        cfg = json.load(open(CONFIG_FILE))
+        print("Dung lai cau hinh cu (them --recalibrate de chon lai).")
+    if "box" not in cfg:
+        countdown(5, "B1: chon khung ve. Chuyen sang cua so game, "
+                     "man hinh se duoc chup sau 5 giay...")
+        cfg["box"] = select_region()
+
+    manual = a.manual
+    if a.palette_hex:
+        hexes = [h.strip().lstrip("#") for h in a.palette_hex.split(",")]
+        cfg["palette_rgb"] = [tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) for h in hexes]
+        cfg["palette_pts"] = None
+        manual = True
+    elif "palette_rgb" not in cfg or (cfg.get("palette_pts") is None and not manual):
+        n = a.colors
+        while not n:
+            t = input("Game co bao nhieu mau? (Enter = 10): ").strip()
+            n = int(t) if t.isdigit() and int(t) > 0 else (10 if t == "" else None)
+        countdown(5, f"B2: chon {n} mau. Chuyen sang cua so game, "
+                     "man hinh se duoc chup sau 5 giay...")
+        pts, cols = pick_palette(n)
+        cfg["palette_pts"], cfg["palette_rgb"] = pts, cols
+    json.dump(cfg, open(CONFIG_FILE, "w"))
+
+    box, pts, cols = cfg["box"], cfg["palette_pts"], cfg["palette_rgb"]
+    print("Khung ve:", box, "| rong x cao =", box[2] - box[0], "x", box[3] - box[1])
+    if pts is None:
+        manual = True
+
+    idx = quantize(a.image, a.grid, cols, a.dither)
+    save_preview(idx, cols)
+    print("Da luu preview.png - mo xem thu truoc khi ve.")
+
+    # Mau nen (o canvas da co san) khong can click
+    s = input("Nhap so thu tu mau NEN can bo qua (vd 1, de trong = ve het): ").strip()
+    skip = {int(s) - 1} if s.isdigit() else set()
+
+    total = int(np.sum(idx >= 0))
+    print(f"Tong ~{total} click. Moi mau se hoi y truoc khi ve.")
+    draw(idx, box, pts, skip, a.delay, len(cols), manual)
+    print("Hoan thanh.")
+
+
+if __name__ == "__main__":
+    main()
