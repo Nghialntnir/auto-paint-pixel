@@ -274,6 +274,7 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
     todo = [c for c in range(n_colors)
             if c not in skip and np.any(idx == c)]
     draw_all = False
+    draw_all_from = None
     for k, ci in enumerate(todo, 1):
         if STOP_EVENT.is_set():
             print("\nDa dung khan cap (F12).")
@@ -299,14 +300,16 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                 continue
             if ans == "a":
                 draw_all = True
-        if not countdown(3, "  Quay lai cua so game..."):
-            return
+                draw_all_from = k
+        if not draw_all or k == draw_all_from:
+            if not countdown(3, "  Quay lai cua so game..."):
+                return
         if not manual:
             px, py = palette_pts[ci]
             if not _click(px, py, click_hold, delay):
                 print("\nDa dung khan cap (F12).")
                 return
-            if STOP_EVENT.wait(0.15):
+            if STOP_EVENT.wait(0.05):
                 print("\nDa dung khan cap (F12).")
                 return
         for cy, cx in sorted(zip(ys, xs)):
@@ -341,10 +344,10 @@ def main():
     ap.add_argument("--colors", type=int, default=None,
                     help="so mau trong bang mau (bo trong = tool se hoi)")
     ap.add_argument("--dither", action="store_true", help="khu rang cua")
-    ap.add_argument("--delay", type=float, default=0.01,
+    ap.add_argument("--delay", type=float, default=0.001,
                     help="giay nghi giua 2 click (tang neu game bi sot)")
-    ap.add_argument("--click-hold", type=float, default=0.04,
-                    help="thoi gian giu chuot moi click (mac dinh 0.04 giay)")
+    ap.add_argument("--click-hold", type=float, default=0.005,
+                    help="thoi gian giu chuot moi click (mac dinh 0.005 giay)")
     ap.add_argument("--manual", action="store_true",
                     help="tu chon mau trong game, tool chi click diem")
     ap.add_argument("--palette-hex", default=None,
