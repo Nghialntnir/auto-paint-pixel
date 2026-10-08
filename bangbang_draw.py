@@ -1,7 +1,7 @@
 """
 BangBang - Auto ve tranh pixel bang click
 Cai dat:  pip install -r requirements.txt
-Chay:     python bangbang_draw.py anh.png --grid 60 --dither
+Chay:     python bangbang_draw.py joker.jpg --grid 60 --dither
 
 Quy trinh:
   1. Keo tha chuot de chon khung ve (goc tren-trai -> goc duoi-phai)
