@@ -36,11 +36,12 @@ except Exception:
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, messagebox
+    from tkinter import filedialog, messagebox, ttk
 except ImportError:  # pragma: no cover - GUI dependency is optional for import-time checks.
     tk = None
     filedialog = None
     messagebox = None
+    ttk = None
 
 try:
     import numpy as np
@@ -182,7 +183,7 @@ def _overlay(title, parent=None):
         parent.withdraw()
         parent.update_idletasks()
         parent.update()
-        time.sleep(0.2)
+        _selection_countdown(parent, title, 4)
     shot = ImageGrab.grab()
     root = tk.Toplevel(parent) if parent is not None else tk.Tk()
     root.attributes("-fullscreen", True)
@@ -201,6 +202,42 @@ def _overlay(title, parent=None):
                        font=("Arial", 14, "bold"))
     root.bg = bg  # giu tham chieu
     return root, canvas, shot, scale_x, scale_y
+
+
+def _selection_countdown(parent, title, seconds):
+    countdown = tk.Toplevel(parent)
+    countdown.title("Chuan bi chon")
+    countdown.attributes("-topmost", True)
+    countdown.resizable(False, False)
+    countdown.configure(background="#14213d")
+    width, height = 440, 132
+    x = (countdown.winfo_screenwidth() - width) // 2
+    y = 48
+    countdown.geometry(f"{width}x{height}+{x}+{y}")
+    ttk.Label(
+        countdown, text="CHUAN BI CHUP MAN HINH",
+        style="CountdownTitle.TLabel").pack(pady=(14, 4))
+    instruction = "Chuyen sang game; man hinh se duoc chup sau"
+    ttk.Label(
+        countdown, text=instruction,
+        style="CountdownHint.TLabel").pack()
+    counter = ttk.Label(countdown, text=str(seconds),
+                        style="CountdownNumber.TLabel")
+    counter.pack(pady=(0, 8))
+    countdown.update()
+
+    deadline = time.monotonic() + seconds
+    remaining = seconds
+    while remaining > 0:
+        countdown.update()
+        next_remaining = max(
+            0, int(deadline - time.monotonic() + 0.999))
+        if next_remaining != remaining:
+            remaining = next_remaining
+            counter.configure(text=str(remaining))
+        time.sleep(0.03)
+    countdown.destroy()
+    parent.update_idletasks()
 
 
 def select_region(parent=None):
@@ -496,81 +533,164 @@ class DrawingApp:
         self.status = tk.StringVar(value="Chon anh, vung ve va bang mau de bat dau.")
         self.progress = tk.StringVar(value="Chua bat dau")
 
+        self._configure_style()
         root.title("BangBang - Ve pixel")
-        root.geometry("760x680")
-        root.minsize(620, 500)
+        root.geometry("860x760")
+        root.minsize(720, 620)
         self._build_widgets()
         self.root.after(80, self._process_events)
 
+    def _configure_style(self):
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        self.root.configure(background="#edf2f7")
+        style.configure("App.TFrame", background="#edf2f7")
+        style.configure("Header.TFrame", background="#14213d")
+        style.configure(
+            "Title.TLabel", background="#14213d", foreground="#ffffff",
+            font=("Segoe UI", 18, "bold"))
+        style.configure(
+            "Subtitle.TLabel", background="#14213d", foreground="#dbeafe",
+            font=("Segoe UI", 9))
+        style.configure(
+            "Section.TLabelframe", background="#ffffff", borderwidth=1,
+            relief="solid")
+        style.configure(
+            "Section.TLabelframe.Label", background="#ffffff",
+            foreground="#14213d", font=("Segoe UI", 10, "bold"))
+        style.configure(
+            "TLabel", background="#ffffff", foreground="#263449",
+            font=("Segoe UI", 9))
+        style.configure("TCheckbutton", background="#ffffff")
+        style.configure("TEntry", padding=5)
+        style.configure("TButton", padding=(10, 7), font=("Segoe UI", 9))
+        style.configure(
+            "Primary.TButton", background="#2563eb", foreground="#ffffff",
+            font=("Segoe UI", 10, "bold"))
+        style.map(
+            "Primary.TButton",
+            background=[("disabled", "#aebbd0"), ("active", "#1d4ed8")],
+            foreground=[("disabled", "#eef2f7"), ("!disabled", "#ffffff")])
+        style.configure(
+            "Pause.TButton", background="#fbbf24", foreground="#422006")
+        style.configure(
+            "Stop.TButton", background="#ef4444", foreground="#ffffff")
+        style.configure(
+            "Status.TLabel", background="#e0f2fe", foreground="#0c4a6e",
+            padding=8, font=("Segoe UI", 9, "bold"))
+        style.configure(
+            "Progress.TLabel", background="#ffffff", foreground="#475569",
+            padding=4, font=("Consolas", 9))
+        style.configure(
+            "Preview.TLabel", background="#f8fafc", foreground="#64748b")
+        style.configure(
+            "CountdownTitle.TLabel", background="#14213d", foreground="#ffffff",
+            font=("Segoe UI", 11, "bold"))
+        style.configure(
+            "CountdownHint.TLabel", background="#14213d", foreground="#dbeafe",
+            font=("Segoe UI", 9))
+        style.configure(
+            "CountdownNumber.TLabel", background="#14213d", foreground="#fbbf24",
+            font=("Segoe UI", 24, "bold"))
+
     def _build_widgets(self):
-        panel = tk.Frame(self.root, padx=12, pady=10)
+        panel = ttk.Frame(self.root, style="App.TFrame", padding=14)
         panel.pack(fill="both", expand=True)
 
-        tk.Label(panel, text="Anh nguon").grid(row=0, column=0, sticky="w")
-        tk.Entry(panel, textvariable=self.image_path).grid(
-            row=0, column=1, columnspan=3, sticky="ew", padx=6)
-        tk.Button(panel, text="Chon anh...", command=self._choose_image).grid(
-            row=0, column=4, sticky="ew")
+        header = ttk.Frame(panel, style="Header.TFrame", padding=(16, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(header, text="BANGBANG PIXEL", style="Title.TLabel").pack(
+            anchor="w")
+        ttk.Label(
+            header, text="Chon anh, lay bang mau va dieu khien qua trinh ve.",
+            style="Subtitle.TLabel").pack(anchor="w", pady=(2, 0))
 
-        settings = tk.Frame(panel)
-        settings.grid(row=1, column=0, columnspan=5, sticky="ew", pady=8)
+        image_section = ttk.LabelFrame(
+            panel, text="  1. Anh nguon  ", style="Section.TLabelframe",
+            padding=10)
+        image_section.grid(row=1, column=0, sticky="ew", pady=5)
+        ttk.Entry(image_section, textvariable=self.image_path).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(image_section, text="Chon anh...", command=self._choose_image).grid(
+            row=0, column=1)
+        image_section.grid_columnconfigure(0, weight=1)
+
+        settings = ttk.LabelFrame(
+            panel, text="  2. Thiet lap  ", style="Section.TLabelframe",
+            padding=10)
+        settings.grid(row=2, column=0, sticky="ew", pady=5)
         self._add_setting(settings, "Luoi canh dai", self.grid_count, 0)
         self._add_setting(settings, "So mau", self.color_count, 2)
         self._add_setting(settings, "Delay (s)", self.delay, 4)
         self._add_setting(settings, "Giu click (s)", self.click_hold, 6)
-        tk.Checkbutton(settings, text="Dithering", variable=self.use_dither).grid(
-            row=0, column=8, padx=8)
-        tk.Checkbutton(settings, text="Tu chon mau thu cong",
-                       variable=self.manual).grid(row=0, column=9, padx=8)
+        ttk.Checkbutton(
+            settings, text="Dithering", variable=self.use_dither).grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(
+            settings, text="Tu chon mau thu cong", variable=self.manual).grid(
+                row=1, column=2, columnspan=3, sticky="w", pady=(8, 0))
 
-        setup = tk.Frame(panel)
-        setup.grid(row=2, column=0, columnspan=5, sticky="ew", pady=4)
-        tk.Button(setup, text="Chon vung ve", command=self._select_region).pack(
-            side="left", padx=(0, 6))
-        tk.Button(setup, text="Lay mau tu game", command=self._select_palette).pack(
-            side="left", padx=6)
-        tk.Button(setup, text="Tao preview", command=self._make_preview).pack(
-            side="left", padx=6)
-        self.region_label = tk.Label(
+        setup = ttk.LabelFrame(
+            panel, text="  3. Vung ve va bang mau  ",
+            style="Section.TLabelframe", padding=10)
+        setup.grid(row=3, column=0, sticky="ew", pady=5)
+        ttk.Button(
+            setup, text="Chon vung ve", command=self._select_region).grid(
+                row=0, column=0, padx=(0, 6))
+        ttk.Button(
+            setup, text="Lay mau tu game", command=self._select_palette).grid(
+                row=0, column=1, padx=6)
+        ttk.Button(
+            setup, text="Tao preview", command=self._make_preview).grid(
+                row=0, column=2, padx=6)
+        self.region_label = ttk.Label(
             setup, text=self._region_description(), anchor="w")
-        self.region_label.pack(side="left", padx=12, fill="x", expand=True)
+        self.region_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
-        controls = tk.Frame(panel)
-        controls.grid(row=3, column=0, columnspan=5, sticky="ew", pady=8)
-        self.start_button = tk.Button(controls, text="Bat dau", command=self.start)
+        controls = ttk.LabelFrame(
+            panel, text="  4. Dieu khien  ", style="Section.TLabelframe",
+            padding=10)
+        controls.grid(row=4, column=0, sticky="ew", pady=5)
+        self.start_button = ttk.Button(
+            controls, text="Bat dau", command=self.start,
+            style="Primary.TButton")
         self.start_button.pack(side="left", padx=(0, 6))
-        self.pause_button = tk.Button(
-            controls, text="Tam dung", command=self.pause, state="disabled")
+        self.pause_button = ttk.Button(
+            controls, text="Tam dung", command=self.pause,
+            style="Pause.TButton", state="disabled")
         self.pause_button.pack(side="left", padx=6)
-        self.resume_button = tk.Button(
-            controls, text="Tiep tuc", command=self.resume, state="disabled")
+        self.resume_button = ttk.Button(
+            controls, text="Tiep tuc", command=self.resume,
+            style="Primary.TButton", state="disabled")
         self.resume_button.pack(side="left", padx=6)
-        self.stop_button = tk.Button(
-            controls, text="Dung", command=self.stop, state="disabled")
+        self.stop_button = ttk.Button(
+            controls, text="Dung", command=self.stop,
+            style="Stop.TButton", state="disabled")
         self.stop_button.pack(side="left", padx=6)
-        self.manual_selected_button = tk.Button(
+        self.manual_selected_button = ttk.Button(
             controls, text="Da chon mau trong game",
             command=self._confirm_manual_color, state="disabled")
         self.manual_selected_button.pack(side="left", padx=6)
 
-        tk.Label(panel, textvariable=self.status, anchor="w").grid(
-            row=4, column=0, columnspan=5, sticky="ew", pady=(2, 0))
-        tk.Label(panel, textvariable=self.progress, anchor="w").grid(
-            row=5, column=0, columnspan=5, sticky="ew")
-        self.preview_label = tk.Label(
-            panel, text="Preview se hien thi tai day", relief="sunken")
-        self.preview_label.grid(
-            row=6, column=0, columnspan=5, sticky="nsew", pady=(8, 0))
-        panel.grid_columnconfigure(1, weight=1)
-        panel.grid_columnconfigure(2, weight=1)
-        panel.grid_columnconfigure(3, weight=1)
-        panel.grid_rowconfigure(6, weight=1)
+        ttk.Label(
+            panel, textvariable=self.status, style="Status.TLabel",
+            anchor="w").grid(row=5, column=0, sticky="ew", pady=(5, 2))
+        ttk.Label(
+            panel, textvariable=self.progress, style="Progress.TLabel",
+            anchor="w").grid(row=6, column=0, sticky="ew")
+        self.preview_label = ttk.Label(
+            panel, text="Preview se hien thi tai day", style="Preview.TLabel",
+            anchor="center", relief="sunken")
+        self.preview_label.grid(row=7, column=0, sticky="nsew", pady=(8, 0))
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(7, weight=1)
 
     @staticmethod
     def _add_setting(parent, label, variable, column):
-        tk.Label(parent, text=label).grid(row=0, column=column, sticky="w")
-        tk.Entry(parent, textvariable=variable, width=7).grid(
-            row=0, column=column + 1, padx=(3, 8))
+        ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w")
+        ttk.Entry(parent, textvariable=variable, width=7).grid(
+            row=0, column=column + 1, padx=(3, 12))
 
     def _region_description(self):
         box = self.config.get("box")
