@@ -2,8 +2,10 @@
 BangBang - Auto ve tranh pixel bang click
 Cai dat:  pip install -r requirements.txt
 Chay:     python bangbang_draw.py anh.png --grid 60 --dither
+Giao dien: python bangbang_draw.py
 
 Quy trinh:
+  Chay khong co tep anh de mo giao dien chon anh, vung ve, mau va dieu khien.
   1. Keo tha chuot de chon khung ve (goc tren-trai -> goc duoi-phai)
   2. Click lan luot len cac o mau trong bang mau cua game (tool tu lay ma mau RGB)
   3. Tool gan pixel vao cac mau da lay, luu preview.png kem chu giai mau
@@ -16,9 +18,11 @@ import argparse
 import ctypes
 import json
 import os
+import queue
 import select
 import sys
 import threading
+import time
 
 # Set DPI awareness before importing GUI/automation modules, which may cache
 # screen dimensions while importing.
@@ -32,8 +36,11 @@ except Exception:
 
 try:
     import tkinter as tk
+    from tkinter import filedialog, messagebox
 except ImportError:  # pragma: no cover - GUI dependency is optional for import-time checks.
     tk = None
+    filedialog = None
+    messagebox = None
 
 try:
     import numpy as np
@@ -79,13 +86,16 @@ def _require_runtime_deps(*deps):
 
 
 # ---------------------------------------------------------------- tien ich
-def countdown(sec, msg):
+def countdown(sec, msg, pause_event=None):
     print(msg)
     for i in range(sec, 0, -1):
         print(f"  {i}...", end="\r", flush=True)
-        if STOP_EVENT.wait(1):
-            print("\nDa dung khan cap (F12).")
-            return False
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if STOP_EVENT.is_set() or not _wait_until_running(pause_event):
+                print("\nDa dung khan cap (F12).")
+                return False
+            STOP_EVENT.wait(min(0.05, deadline - time.monotonic()))
     print(" " * 20, end="\r")
     return True
 
@@ -151,19 +161,25 @@ def _start_emergency_listener():
     def on_press(key):
         if key == keyboard.Key.f12:
             STOP_EVENT.set()
-            return False
 
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
     return listener
 
 
+def _wait_until_running(pause_event):
+    while not STOP_EVENT.is_set():
+        if pause_event is None or pause_event.wait(0.02):
+            return not STOP_EVENT.is_set()
+    return False
+
+
 # ---------------------------------------------------------------- UI chon vung
-def _overlay(title):
+def _overlay(title, parent=None):
     """Mo cua so toan man hinh co anh chup man hinh lam nen."""
     _require_runtime_deps("Pillow", "tkinter")
     shot = ImageGrab.grab()
-    root = tk.Tk()
+    root = tk.Toplevel(parent) if parent is not None else tk.Tk()
     root.attributes("-fullscreen", True)
     root.attributes("-topmost", True)
     root.update()
@@ -181,9 +197,10 @@ def _overlay(title):
     return root, canvas, shot, scale_x, scale_y
 
 
-def select_region():
+def select_region(parent=None):
     root, canvas, shot, sx, sy = _overlay(
-        "KEO CHUOT tu goc TREN-TRAI den goc DUOI-PHAI khung ve (ESC = thoat)")
+        "KEO CHUOT tu goc TREN-TRAI den goc DUOI-PHAI khung ve (ESC = thoat)",
+        parent)
     state = {"start": None, "rect": None, "box": None}
 
     def down(e):
@@ -206,14 +223,17 @@ def select_region():
     canvas.bind("<ButtonPress-1>", down)
     canvas.bind("<B1-Motion>", move)
     canvas.bind("<ButtonRelease-1>", up)
-    root.bind("<Escape>", lambda e: sys.exit("Da huy."))
+    root.bind("<Escape>", lambda e: root.destroy())
     root.mainloop()
+    if state["box"] is None:
+        raise RuntimeError("Da huy chon vung ve.")
     return state["box"]
 
 
-def pick_palette(n):
+def pick_palette(n, parent=None):
     root, canvas, shot, sx, sy = _overlay(
-        f"CLICK lan luot {n} o mau trong bang mau cua game (ESC = thoat)")
+        f"CLICK lan luot {n} o mau trong bang mau cua game (ESC = thoat)",
+        parent)
     points, colors = [], []
 
     def click(e):
@@ -229,8 +249,10 @@ def pick_palette(n):
             root.after(400, root.destroy)
 
     canvas.bind("<Button-1>", click)
-    root.bind("<Escape>", lambda e: sys.exit("Da huy."))
+    root.bind("<Escape>", lambda e: root.destroy())
     root.mainloop()
+    if len(points) < n:
+        raise RuntimeError("Da huy chon bang mau.")
     return points, colors
 
 
@@ -321,7 +343,8 @@ def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
 
 # ---------------------------------------------------------------- ve
 def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
-         click_hold=0.04):
+         click_hold=0.04, pause_event=None, on_pixel=None,
+         automatic=False, on_manual_color=None):
     _require_runtime_deps("numpy", "pyautogui")
     x1, y1, x2, y2 = box
     grid_h, grid_w = idx.shape
@@ -339,7 +362,12 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                f"{n_colors}]: {len(xs)} diem.")
         if manual:
             msg += "\n  >> Hay TU CHON mau nay trong game truoc."
-        if draw_all:
+            if automatic and on_manual_color is not None:
+                if not on_manual_color(ci):
+                    return
+        if automatic:
+            print(msg + "\n  Dang ve (F12 = dung).")
+        elif draw_all:
             print(msg + "\n  Tu dong ve (F12 = dung).")
         else:
             options = "y = ve | s = bo qua mau nay | q = thoat"
@@ -357,44 +385,408 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
             if ans == "a":
                 draw_all = True
                 draw_all_from = k
-        if not draw_all or k == draw_all_from:
+        if not automatic and (not draw_all or k == draw_all_from):
             if not countdown(3, "  Quay lai cua so game..."):
                 return
         if not manual:
             px, py = palette_pts[ci]
-            if not _click(px, py, click_hold, delay):
+            if not _click(px, py, click_hold, delay, pause_event):
                 print("\nDa dung khan cap (F12).")
                 return
-            if STOP_EVENT.wait(0.05):
+            if not automatic and STOP_EVENT.wait(0.05):
                 print("\nDa dung khan cap (F12).")
                 return
-        for cy, cx in sorted(zip(ys, xs)):
+        for pixel_number, (cy, cx) in enumerate(sorted(zip(ys, xs)), 1):
             px = int(x1 + (cx + 0.5) * cw)
             py = int(y1 + (cy + 0.5) * ch)
-            if not _click(px, py, click_hold, delay):
+            def pixel_done():
+                if on_pixel is not None:
+                    on_pixel(ci, pixel_number, len(xs), px, py)
+
+            if not _click(px, py, click_hold, delay, pause_event, pixel_done):
                 print("\nDa dung khan cap (F12).")
                 return
         print(f"  Xong mau #{ci + 1}.")
 
 
-def _click(x, y, click_hold, delay):
+def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
     """Send a deliberate press/release and leave time for the app to process it."""
+    if not _wait_until_running(pause_event):
+        return False
     if STOP_EVENT.is_set():
         return False
     pyautogui.moveTo(x, y)
     pyautogui.mouseDown()
     try:
-        stopped = STOP_EVENT.wait(click_hold)
+        deadline = time.monotonic() + click_hold
+        while not STOP_EVENT.is_set():
+            if pause_event is not None and not pause_event.is_set():
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            STOP_EVENT.wait(min(remaining, 0.01))
     finally:
         pyautogui.mouseUp()
-    if stopped or STOP_EVENT.wait(delay):
+    if STOP_EVENT.is_set():
         return False
-    return True
+    if on_click is not None:
+        on_click()
+    if not _wait_until_running(pause_event):
+        return False
+    return not STOP_EVENT.wait(delay)
+
+
+class DrawingApp:
+    def __init__(self, root, args):
+        _require_runtime_deps("Pillow", "tkinter", "numpy", "pyautogui")
+        self.root = root
+        self.args = args
+        self.events = queue.Queue()
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.worker = None
+        self.last_pixel = None
+        self.manual_color_event = None
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as config_file:
+                self.config = json.load(config_file)
+        except FileNotFoundError:
+            self.config = {}
+
+        saved_palette = self.config.get("palette_rgb", [])
+        color_count = args.colors or len(saved_palette) or 12
+        self.image_path = tk.StringVar(value=args.image or "")
+        self.grid_count = tk.StringVar(value=str(args.grid))
+        self.color_count = tk.StringVar(value=str(color_count))
+        self.delay = tk.StringVar(value=str(args.delay))
+        self.click_hold = tk.StringVar(value=str(args.click_hold))
+        self.use_dither = tk.BooleanVar(value=args.dither)
+        self.manual = tk.BooleanVar(value=args.manual)
+        self.status = tk.StringVar(value="Chon anh, vung ve va bang mau de bat dau.")
+        self.progress = tk.StringVar(value="Chua bat dau")
+
+        root.title("BangBang - Ve pixel")
+        root.geometry("760x680")
+        root.minsize(620, 500)
+        self._build_widgets()
+        self.root.after(80, self._process_events)
+
+    def _build_widgets(self):
+        panel = tk.Frame(self.root, padx=12, pady=10)
+        panel.pack(fill="both", expand=True)
+
+        tk.Label(panel, text="Anh nguon").grid(row=0, column=0, sticky="w")
+        tk.Entry(panel, textvariable=self.image_path).grid(
+            row=0, column=1, columnspan=3, sticky="ew", padx=6)
+        tk.Button(panel, text="Chon anh...", command=self._choose_image).grid(
+            row=0, column=4, sticky="ew")
+
+        settings = tk.Frame(panel)
+        settings.grid(row=1, column=0, columnspan=5, sticky="ew", pady=8)
+        self._add_setting(settings, "Luoi canh dai", self.grid_count, 0)
+        self._add_setting(settings, "So mau", self.color_count, 2)
+        self._add_setting(settings, "Delay (s)", self.delay, 4)
+        self._add_setting(settings, "Giu click (s)", self.click_hold, 6)
+        tk.Checkbutton(settings, text="Dithering", variable=self.use_dither).grid(
+            row=0, column=8, padx=8)
+        tk.Checkbutton(settings, text="Tu chon mau thu cong",
+                       variable=self.manual).grid(row=0, column=9, padx=8)
+
+        setup = tk.Frame(panel)
+        setup.grid(row=2, column=0, columnspan=5, sticky="ew", pady=4)
+        tk.Button(setup, text="Chon vung ve", command=self._select_region).pack(
+            side="left", padx=(0, 6))
+        tk.Button(setup, text="Lay mau tu game", command=self._select_palette).pack(
+            side="left", padx=6)
+        tk.Button(setup, text="Tao preview", command=self._make_preview).pack(
+            side="left", padx=6)
+        self.region_label = tk.Label(
+            setup, text=self._region_description(), anchor="w")
+        self.region_label.pack(side="left", padx=12, fill="x", expand=True)
+
+        controls = tk.Frame(panel)
+        controls.grid(row=3, column=0, columnspan=5, sticky="ew", pady=8)
+        self.start_button = tk.Button(controls, text="Bat dau", command=self.start)
+        self.start_button.pack(side="left", padx=(0, 6))
+        self.pause_button = tk.Button(
+            controls, text="Tam dung", command=self.pause, state="disabled")
+        self.pause_button.pack(side="left", padx=6)
+        self.resume_button = tk.Button(
+            controls, text="Tiep tuc", command=self.resume, state="disabled")
+        self.resume_button.pack(side="left", padx=6)
+        self.stop_button = tk.Button(
+            controls, text="Dung", command=self.stop, state="disabled")
+        self.stop_button.pack(side="left", padx=6)
+        self.manual_selected_button = tk.Button(
+            controls, text="Da chon mau trong game",
+            command=self._confirm_manual_color, state="disabled")
+        self.manual_selected_button.pack(side="left", padx=6)
+
+        tk.Label(panel, textvariable=self.status, anchor="w").grid(
+            row=4, column=0, columnspan=5, sticky="ew", pady=(2, 0))
+        tk.Label(panel, textvariable=self.progress, anchor="w").grid(
+            row=5, column=0, columnspan=5, sticky="ew")
+        self.preview_label = tk.Label(
+            panel, text="Preview se hien thi tai day", relief="sunken")
+        self.preview_label.grid(
+            row=6, column=0, columnspan=5, sticky="nsew", pady=(8, 0))
+        panel.grid_columnconfigure(1, weight=1)
+        panel.grid_columnconfigure(2, weight=1)
+        panel.grid_columnconfigure(3, weight=1)
+        panel.grid_rowconfigure(6, weight=1)
+
+    @staticmethod
+    def _add_setting(parent, label, variable, column):
+        tk.Label(parent, text=label).grid(row=0, column=column, sticky="w")
+        tk.Entry(parent, textvariable=variable, width=7).grid(
+            row=0, column=column + 1, padx=(3, 8))
+
+    def _region_description(self):
+        box = self.config.get("box")
+        if not box:
+            return "Chua chon vung"
+        return f"Vung: {box[2] - box[0]} x {box[3] - box[1]}"
+
+    def _save_config(self):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as config_file:
+            json.dump(self.config, config_file)
+
+    def _choose_image(self):
+        path = filedialog.askopenfilename(
+            title="Chon anh de ve",
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                       ("All files", "*.*")])
+        if path:
+            self.image_path.set(path)
+
+    def _select_region(self):
+        try:
+            self.root.withdraw()
+            try:
+                box = select_region()
+            finally:
+                self.root.deiconify()
+                self.root.lift()
+            self.config["box"] = box
+            self._save_config()
+            self.region_label.config(text=self._region_description())
+            if self.image_path.get().strip() and self.config.get("palette_rgb"):
+                self._make_preview()
+            else:
+                self._set_status("Da chon vung ve.")
+        except Exception as exc:
+            messagebox.showerror("Khong chon duoc vung ve", str(exc))
+
+    def _select_palette(self):
+        try:
+            count = int(self.color_count.get())
+            if not 1 <= count <= 256:
+                raise ValueError("So mau phai nam trong khoang 1..256.")
+            self.root.withdraw()
+            try:
+                points, colors = pick_palette(count)
+            finally:
+                self.root.deiconify()
+                self.root.lift()
+            self.config["palette_pts"] = points
+            self.config["palette_rgb"] = colors
+            self._save_config()
+            if self.image_path.get().strip() and self.config.get("box"):
+                self._make_preview()
+            else:
+                self._set_status(f"Da lay {len(colors)} mau tu giao dien game.")
+        except Exception as exc:
+            messagebox.showerror("Khong lay duoc bang mau", str(exc))
+
+    def _get_image_data(self):
+        path = self.image_path.get().strip()
+        box = self.config.get("box")
+        palette = self.config.get("palette_rgb")
+        if not path or not os.path.isfile(path):
+            raise ValueError("Hay chon tep anh hop le.")
+        if not box:
+            raise ValueError("Hay chon vung ve truoc.")
+        if not palette:
+            raise ValueError("Hay lay bang mau tu giao dien game truoc.")
+        max_cells = int(self.grid_count.get())
+        if max_cells <= 0:
+            raise ValueError("Luoi canh dai phai lon hon 0.")
+        grid_size = grid_for_box(box, max_cells)
+        idx = quantize(path, grid_size, palette, self.use_dither.get())
+        return idx, box, palette
+
+    def _make_preview(self):
+        try:
+            idx, _, palette = self._get_image_data()
+            save_preview(idx, palette, path="preview.png")
+            with Image.open("preview.png") as preview_file:
+                preview = preview_file.copy()
+            preview.thumbnail((700, 460), Image.Resampling.LANCZOS)
+            self.preview_image = ImageTk.PhotoImage(preview)
+            self.preview_label.config(image=self.preview_image, text="")
+            counts = np.bincount(idx.ravel(), minlength=len(palette))
+            used = int(np.count_nonzero(counts))
+            self._set_status(
+                f"Preview: {idx.shape[1]} x {idx.shape[0]} o, "
+                f"{len(palette)} mau trong bang, {used} mau co pixel.")
+        except Exception as exc:
+            messagebox.showerror("Khong tao duoc preview", str(exc))
+
+    def start(self):
+        if self.worker is not None and self.worker.is_alive():
+            return
+        try:
+            idx, box, palette = self._get_image_data()
+            delay = float(self.delay.get())
+            click_hold = float(self.click_hold.get())
+            if delay < 0 or click_hold <= 0:
+                raise ValueError("Delay phai >= 0 va giu click phai > 0.")
+        except Exception as exc:
+            messagebox.showerror("Khong the bat dau", str(exc))
+            return
+
+        STOP_EVENT.clear()
+        self.pause_event.set()
+        self.last_pixel = None
+        self.manual_color_event = None
+        palette_points = self.config.get("palette_pts")
+        manual = self.manual.get() or palette_points is None
+        if not manual and len(palette_points) != len(palette):
+            messagebox.showerror(
+                "Bang mau khong hop le",
+                "So vi tri mau khong khop bang mau. Hay lay lai bang mau "
+                "hoac bat tu chon mau thu cong.")
+            return
+        self.progress.set("Bat dau tu pixel dau tien")
+        self._set_running_controls(True)
+        self._set_status("Dang bat dau. Bam F12 hoac nut Dung de dung khan cap.")
+        self.worker = threading.Thread(
+            target=self._draw_worker,
+            args=(idx, box, palette, palette_points, manual, delay, click_hold),
+            daemon=True)
+        self.worker.start()
+
+    def _draw_worker(self, idx, box, palette, palette_points, manual,
+                     delay, click_hold):
+        try:
+            if not countdown(3, "Chuyen sang cua so game...", self.pause_event):
+                self.events.put(("finished", "Da dung."))
+                return
+            draw(
+                idx, box, palette_points, set(), delay, len(palette), manual,
+                click_hold, self.pause_event, self._pixel_completed,
+                automatic=True, on_manual_color=self._wait_for_manual_color)
+            state = "Da dung." if STOP_EVENT.is_set() else "Ve hoan tat."
+            self.events.put(("finished", state))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
+
+    def _wait_for_manual_color(self, color_index):
+        event = threading.Event()
+        self.manual_color_event = event
+        self.events.put(("manual_color", color_index + 1))
+        while not STOP_EVENT.is_set():
+            if not _wait_until_running(self.pause_event):
+                return False
+            if event.wait(0.05):
+                self.manual_color_event = None
+                return True
+        return False
+
+    def _confirm_manual_color(self):
+        if self.manual_color_event is not None:
+            self.manual_color_event.set()
+            self.manual_selected_button.config(state="disabled")
+            self._set_status("Da xac nhan mau; tiep tuc ve.")
+
+    def _pixel_completed(self, color, number, total, x, y):
+        self.last_pixel = (color, number, x, y)
+        self.events.put(
+            ("progress", (color + 1, number, total, x, y,
+                          not self.pause_event.is_set())))
+
+    def _process_events(self):
+        try:
+            while True:
+                event, value = self.events.get_nowait()
+                if event == "progress":
+                    color, number, total, x, y, paused = value
+                    self.progress.set(
+                        f"Mau #{color}: pixel {number}/{total}; "
+                        f"toa do cuoi ({x}, {y})")
+                    if paused:
+                        self.status.set("Da tam dung sau khi hoan tat click hien tai.")
+                elif event == "finished":
+                    self._set_status(value)
+                    self._set_running_controls(False)
+                    self.manual_selected_button.config(state="disabled")
+                elif event == "error":
+                    self._set_status("Gap loi khi ve.")
+                    self._set_running_controls(False)
+                    self.manual_selected_button.config(state="disabled")
+                    messagebox.showerror("Loi khi ve", value)
+                elif event == "manual_color":
+                    self._set_status(
+                        f"Hay chon mau #{value} trong game, roi bam "
+                        "'Da chon mau trong game'.")
+                    self.manual_selected_button.config(state="normal")
+        except queue.Empty:
+            pass
+        self.root.after(80, self._process_events)
+
+    def pause(self):
+        if self.worker is not None and self.worker.is_alive():
+            self.pause_event.clear()
+            self.pause_button.config(state="disabled")
+            self.resume_button.config(state="normal")
+            self._set_status("Dang tam dung sau click hien tai...")
+
+    def resume(self):
+        if self.worker is not None and self.worker.is_alive():
+            self.pause_event.set()
+            self.pause_button.config(state="normal")
+            self.resume_button.config(state="disabled")
+            self._set_status("Dang tiep tuc tu pixel ke tiep...")
+
+    def stop(self):
+        STOP_EVENT.set()
+        self.pause_event.set()
+        if self.manual_color_event is not None:
+            self.manual_color_event.set()
+        self._set_status("Dang dung...")
+        self.resume_button.config(state="disabled")
+        self.stop_button.config(state="disabled")
+        self.manual_selected_button.config(state="disabled")
+
+    def _set_running_controls(self, running):
+        self.start_button.config(state="disabled" if running else "normal")
+        self.pause_button.config(state="normal" if running else "disabled")
+        self.resume_button.config(state="disabled")
+        self.stop_button.config(state="normal" if running else "disabled")
+
+    def _set_status(self, text):
+        self.status.set(text)
+
+    def close(self, listener):
+        STOP_EVENT.set()
+        self.pause_event.set()
+        listener.stop()
+        self.root.destroy()
+
+
+def run_gui(args):
+    _require_runtime_deps("tkinter", "Pillow", "numpy", "pyautogui")
+    root = tk.Tk()
+    app = DrawingApp(root, args)
+    listener = _start_emergency_listener()
+    root.protocol("WM_DELETE_WINDOW", lambda: app.close(listener))
+    root.mainloop()
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("image")
+    ap.add_argument("image", nargs="?")
     ap.add_argument("--grid", type=int, default=60,
                     help="so o tren canh dai nhat cua khung ve (mac dinh 60)")
     ap.add_argument("--colors", type=int, default=None,
@@ -419,6 +811,10 @@ def main():
         ap.error("--click-hold phai lon hon 0")
     if a.colors is not None and not 1 <= a.colors <= 256:
         ap.error("--colors phai nam trong khoang 1..256")
+
+    if a.image is None:
+        run_gui(a)
+        return
 
     cfg = {}
     if os.path.exists(CONFIG_FILE) and not a.recalibrate:
