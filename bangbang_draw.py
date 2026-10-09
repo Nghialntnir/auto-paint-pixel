@@ -178,10 +178,16 @@ def _wait_until_running(pause_event):
 def _overlay(title, parent=None):
     """Mo cua so toan man hinh co anh chup man hinh lam nen."""
     _require_runtime_deps("Pillow", "tkinter")
+    if parent is not None:
+        parent.withdraw()
+        parent.update_idletasks()
+        parent.update()
+        time.sleep(0.2)
     shot = ImageGrab.grab()
     root = tk.Toplevel(parent) if parent is not None else tk.Tk()
     root.attributes("-fullscreen", True)
     root.attributes("-topmost", True)
+    root.focus_force()
     root.update()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     scale_x, scale_y = shot.width / sw, shot.height / sh
@@ -198,62 +204,86 @@ def _overlay(title, parent=None):
 
 
 def select_region(parent=None):
-    root, canvas, shot, sx, sy = _overlay(
-        "KEO CHUOT tu goc TREN-TRAI den goc DUOI-PHAI khung ve (ESC = thoat)",
-        parent)
-    state = {"start": None, "rect": None, "box": None}
+    try:
+        root, canvas, shot, sx, sy = _overlay(
+            "KEO CHUOT tu goc TREN-TRAI den goc DUOI-PHAI khung ve (ESC = thoat)",
+            parent)
+        state = {"start": None, "rect": None, "box": None}
 
-    def down(e):
-        state["start"] = (e.x, e.y)
-        state["rect"] = canvas.create_rectangle(e.x, e.y, e.x, e.y,
-                                                outline="red", width=2)
+        def down(e):
+            state["start"] = (e.x, e.y)
+            state["rect"] = canvas.create_rectangle(e.x, e.y, e.x, e.y,
+                                                    outline="red", width=2)
 
-    def move(e):
-        if state["start"]:
+        def move(e):
+            if state["start"]:
+                x0, y0 = state["start"]
+                canvas.coords(state["rect"], x0, y0, e.x, e.y)
+
+        def up(e):
             x0, y0 = state["start"]
-            canvas.coords(state["rect"], x0, y0, e.x, e.y)
+            x1, y1 = e.x, e.y
+            state["box"] = (int(min(x0, x1) * sx), int(min(y0, y1) * sy),
+                            int(max(x0, x1) * sx), int(max(y0, y1) * sy))
+            root.destroy()
 
-    def up(e):
-        x0, y0 = state["start"]
-        x1, y1 = e.x, e.y
-        state["box"] = (int(min(x0, x1) * sx), int(min(y0, y1) * sy),
-                        int(max(x0, x1) * sx), int(max(y0, y1) * sy))
-        root.destroy()
-
-    canvas.bind("<ButtonPress-1>", down)
-    canvas.bind("<B1-Motion>", move)
-    canvas.bind("<ButtonRelease-1>", up)
-    root.bind("<Escape>", lambda e: root.destroy())
-    root.mainloop()
-    if state["box"] is None:
-        raise RuntimeError("Da huy chon vung ve.")
-    return state["box"]
+        canvas.bind("<ButtonPress-1>", down)
+        canvas.bind("<B1-Motion>", move)
+        canvas.bind("<ButtonRelease-1>", up)
+        root.bind("<Escape>", lambda e: root.destroy())
+        if parent is None:
+            root.mainloop()
+        else:
+            parent.wait_window(root)
+        if state["box"] is None:
+            raise RuntimeError("Da huy chon vung ve.")
+        return state["box"]
+    finally:
+        _restore_parent_behind(parent)
 
 
 def pick_palette(n, parent=None):
-    root, canvas, shot, sx, sy = _overlay(
-        f"CLICK lan luot {n} o mau trong bang mau cua game (ESC = thoat)",
-        parent)
-    points, colors = [], []
+    try:
+        root, canvas, shot, sx, sy = _overlay(
+            f"CLICK lan luot {n} o mau trong bang mau cua game (ESC = thoat)",
+            parent)
+        points, colors = [], []
 
-    def click(e):
-        px, py = int(e.x * sx), int(e.y * sy)
-        rgb = shot.getpixel((px, py))[:3]
-        points.append((px, py))
-        colors.append(rgb)
-        canvas.create_oval(e.x - 6, e.y - 6, e.x + 6, e.y + 6,
-                           outline="red", width=2)
-        canvas.create_text(e.x + 12, e.y - 12, text=str(len(points)),
-                           fill="red", font=("Arial", 12, "bold"))
-        if len(points) >= n:
-            root.after(400, root.destroy)
+        def click(e):
+            px = min(shot.width - 1, max(0, int(e.x * sx)))
+            py = min(shot.height - 1, max(0, int(e.y * sy)))
+            rgb = shot.getpixel((px, py))[:3]
+            points.append((px, py))
+            colors.append(rgb)
+            canvas.create_oval(e.x - 6, e.y - 6, e.x + 6, e.y + 6,
+                               outline="red", width=2)
+            canvas.create_text(e.x + 12, e.y - 12, text=str(len(points)),
+                               fill="red", font=("Arial", 12, "bold"))
+            if len(points) >= n:
+                root.after(400, root.destroy)
 
-    canvas.bind("<Button-1>", click)
-    root.bind("<Escape>", lambda e: root.destroy())
-    root.mainloop()
-    if len(points) < n:
-        raise RuntimeError("Da huy chon bang mau.")
-    return points, colors
+        canvas.bind("<Button-1>", click)
+        root.bind("<Escape>", lambda e: root.destroy())
+        if parent is None:
+            root.mainloop()
+        else:
+            parent.wait_window(root)
+        if len(points) < n:
+            raise RuntimeError("Da huy chon bang mau.")
+        return points, colors
+    finally:
+        _restore_parent_behind(parent)
+
+
+def _restore_parent_behind(parent):
+    if parent is None:
+        return
+    try:
+        parent.deiconify()
+        parent.attributes("-topmost", False)
+        parent.lower()
+    except tk.TclError:
+        pass
 
 
 # ------------------------------------------------------------- xu ly anh
@@ -562,13 +592,7 @@ class DrawingApp:
 
     def _select_region(self):
         try:
-            self.root.withdraw()
-            try:
-                box = select_region()
-            finally:
-                self.root.deiconify()
-                self.root.lift()
-            self.config["box"] = box
+            self.config["box"] = select_region(self.root)
             self._save_config()
             self.region_label.config(text=self._region_description())
             if self.image_path.get().strip() and self.config.get("palette_rgb"):
@@ -583,12 +607,7 @@ class DrawingApp:
             count = int(self.color_count.get())
             if not 1 <= count <= 256:
                 raise ValueError("So mau phai nam trong khoang 1..256.")
-            self.root.withdraw()
-            try:
-                points, colors = pick_palette(count)
-            finally:
-                self.root.deiconify()
-                self.root.lift()
+            points, colors = pick_palette(count, self.root)
             self.config["palette_pts"] = points
             self.config["palette_rgb"] = colors
             self._save_config()
