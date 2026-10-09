@@ -52,12 +52,13 @@ Work through the numbered sections in the window:
 
 1. **Source image:** Browse to a PNG, JPEG, BMP, or GIF. The source image is
    read from its original location and is not modified.
-2. **Drawing settings:** Set the number of cells along the grid's longest edge,
-   palette size, delay after each click, and mouse-button hold duration.
-   Enable dithering if desired. Longer grids create more detail and require
-   more clicks and drawing time. The palette count is the number of swatches to
-   capture; if you change it, capture a matching palette before previewing or
-   drawing.
+2. **Drawing settings:** Set **Grid longest edge (cells)**, **Palette size
+   (colors)**, **Wait after click (s)**, and **Mouse press duration (s)**.
+   The grid value controls cells along the longer canvas edge; the shorter
+   edge is calculated proportionally. If you change the palette size, capture
+   a matching set of swatches before previewing or drawing. Enable dithering
+   if desired. Longer grids create more detail and require more clicks and
+   drawing time.
    Optionally enable **Draw every color twice** to revisit every pixel in the
    current color immediately after its first pass, before selecting the next
    color. This doubles drawing clicks and is useful when the game occasionally
@@ -79,12 +80,13 @@ Work through the numbered sections in the window:
 
 ### Grid resolution and preview
 
-**Longest edge (cells)** sets the number of cells along the longer side of the
-selected drawing rectangle; it is not the total number of cells. Pixel
-Painting scales the shorter side proportionally and rounds it to the nearest
-whole cell, with a minimum of one cell. For example, a 60-cell setting in a
-3:2 landscape area produces a grid of about 60 x 40 cells. The GUI shows the
-final width, height, and total cell count beside the setting.
+Select a rectangular drawing area first. **Grid longest edge (cells)** sets
+the number of cells along the longer side of that rectangle; it is not the
+total number of cells. Pixel Painting scales the shorter side proportionally
+and rounds it to the nearest whole cell, with a minimum of one cell. For
+example, a 60-cell setting in a 3:2 landscape area produces a grid of about
+60 x 40 cells. The GUI shows the final width, height, and total cell count
+beside the setting.
 
 Press Enter or leave the grid field to validate the value and refresh the
 preview when the image, area, and palette are ready. Invalid or incomplete
@@ -226,16 +228,37 @@ increasing `--click-hold` or `--delay`.
   pixels, but cannot establish how the target app processes screen clicks.
   Check the run log's selected rectangle, grid dimensions, and cell size;
   verify that the selection excludes unwanted borders and matches the target
-  canvas. DPI/display scaling, window scaling, an internal canvas grid that
-  differs from the chosen resolution, asynchronous input handling, and missed
-  clicks are all possible causes. The app does not infer the target's internal
-  grid or automatically repair gaps. The optional duplicate pass can help with
+  canvas. Pixel Painting warns when the requested grid has more cells along
+  either axis than there are screen-coordinate positions in the selected
+  rectangle, because those cells must share click coordinates. This is a
+  screen-coordinate limit, not a measurement of the game's internal grid.
+  DPI/display scaling, window scaling, a target canvas grid that differs from
+  the chosen resolution, asynchronous input handling, and missed clicks are
+  also possible causes. The app does not infer the target's internal grid or
+  automatically repair gaps. The optional duplicate pass can help with
   occasional missed clicks, but it does not fix a coordinate or grid mismatch.
 - **Drawing is too slow:** Reduce the longest grid edge or lower the delay.
   A smaller grid means fewer clicks and less detail.
 - **The target misses clicks:** Increase the click hold or delay.
 - **Need a fresh setup:** Run with `--recalibrate` or use the GUI's area and
   palette capture controls.
+
+## Tests
+
+Run the project's unittest suite from the repository directory:
+
+```powershell
+py -m unittest -v
+```
+
+Grid tests check proportional landscape and portrait dimensions, very wide or
+tall and small canvases, invalid inputs, and that the resulting dimensions are
+passed to the image quantizer. They also check when a grid exceeds the selected
+area's available screen-coordinate positions. Coordinate tests check integer
+cell centers, including the first and last cells, non-divisible rectangles,
+and that clicks stay inside the selected half-open drawing area. The tests use
+mocks for screen input and image-preparation boundaries, so they do not
+establish how a particular game handles clicks or renders its canvas.
 
 ## Project files and generated data
 
