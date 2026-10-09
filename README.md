@@ -23,8 +23,9 @@ clicks to draw the result.
 - Lets you skip selected colors so those pixels are left untouched.
 - Manual color selection, including an option to confirm the first color and
   automatically select all remaining captured colors.
-- Optional duplicate pass that redraws each color's pixels once before
-  switching to the next palette color, helping cover missed clicks.
+- Optional per-color redraws that repeat each color's pixels a configurable
+  number of times before switching to the next palette color, helping cover
+  missed clicks.
 - Configurable click delay and mouse-button hold duration.
 - Pause, resume, and emergency-stop controls; GUI drawing also verifies the
   target application is active before clicking.
@@ -52,18 +53,16 @@ Work through the numbered sections in the window:
 
 1. **Source image:** Browse to a PNG, JPEG, BMP, or GIF. The source image is
    read from its original location and is not modified.
-2. **Drawing settings:** Set **Grid longest edge (cells)**, **Palette size
-   (colors)**, **Wait after click (s)**, and **Mouse press duration (s)**.
+2. **Drawing settings:** Set **Grid max (cells)**, **Palette size (colors)**,
+   **Delay after click (s)**, and **Click hold (s)**.
    The grid value controls cells along the longer canvas edge; the shorter
    edge is calculated proportionally. If you change the palette size, capture
    a matching set of swatches before previewing or drawing. Enable dithering
    if desired. Longer grids create more detail and require more clicks and
    drawing time.
-   Optionally enable **Draw every color twice** to revisit every pixel in the
-   current color immediately after its first pass, before selecting the next
-   color. This doubles drawing clicks and is useful when the game occasionally
-   misses inputs. It is disabled by default because it approximately doubles
-   drawing time.
+   Optionally enable **Repeat each color's pixels** and set **Additional
+   redraws per color**. The default is one additional pass (two total passes);
+   each extra pass increases clicks and drawing time.
 3. **Drawing area and palette:** Select the target canvas by dragging from its
    top-left to bottom-right after the countdown. Capture palette colors by
    clicking the center of each game swatch, in order. Captured swatch positions
@@ -80,7 +79,7 @@ Work through the numbered sections in the window:
 
 ### Grid resolution and preview
 
-Select a rectangular drawing area first. **Grid longest edge (cells)** sets
+Select a rectangular drawing area first. **Grid max (cells)** sets
 the number of cells along the longer side of that rectangle; it is not the
 total number of cells. Pixel Painting scales the shorter side proportionally
 and rounds it to the nearest whole cell, with a minimum of one cell. For
@@ -105,6 +104,12 @@ the final grid width and height. This keeps clicks inside the selected
 rectangle for portrait, landscape, and non-divisible dimensions. The reported
 grid and selected screen area are also written to the run log.
 
+If the requested longest edge exceeds the selected rectangle's longest screen
+dimension, the grid is capped to that dimension. This prevents multiple grid
+cells from being assigned the same integer screen coordinate. The cap cannot
+identify a game's internal pixel grid or compensate for DPI scaling, canvas
+borders, brush size, or game rendering behavior.
+
 ### Selecting game colors
 
 By default, the app automatically clicks each captured palette swatch before
@@ -120,25 +125,26 @@ positions, so its colors must be selected manually.
 
 ### Retry pixels with a duplicate pass
 
-Enable **Draw every color twice** in Drawing settings when the target app
-occasionally misses a click. For each color, Pixel Painting completes one pass
-over that color's pixels, returns to the beginning of the same pixel list, and
-clicks every pixel a second time. Only after both passes finish does it select
-the next palette color. For example, it completes both passes for black before
-selecting white.
+Enable **Repeat each color's pixels** when the target app occasionally misses
+a click, then set **Additional redraws per color** to the number of extra
+passes. With the default value `1`, Pixel Painting completes the initial pass
+and one additional pass. It returns to the beginning of that color's pixel
+list for each redraw and selects the next palette color only after all passes
+finish. For example, it completes all passes for black before selecting white.
 
 The retry uses the same pixel coordinates and color; it does not recolor,
 re-quantize, or make a separate pass over the whole image. Skipped colors
 remain skipped. In manual-color mode, select and confirm a color once; both
-passes for that color then run before the app asks for the next color. Drawing
-progress includes both passes. Stop or pause controls remain available while
-either pass is running.
+the first pass and all configured redraws then run before the app asks for the
+next color. Drawing progress includes each pass. Stop or pause controls remain
+available while passes are running.
 
-The option is off by default because it approximately doubles the number of
-pixel clicks and drawing time. You can also enable it from the command line:
+The option is off by default. Each additional pass adds another full round of
+pixel clicks for each used, non-skipped color. You can enable and configure it
+from the command line:
 
 ```powershell
-py pixel_draw.py .\path\to\image.png --duplicate-pass
+py pixel_draw.py .\path\to\image.png --duplicate-pass --additional-passes 1
 ```
 
 ### Keyboard controls and safety
@@ -197,7 +203,10 @@ py pixel_draw.py .\path\to\image.png --recalibrate
 py pixel_draw.py .\path\to\image.png --delay 0.05 --click-hold 0.1
 
 # Draw each color's pixels twice before switching to the next color.
-py pixel_draw.py .\path\to\image.png --duplicate-pass
+py pixel_draw.py .\path\to\image.png --duplicate-pass --additional-passes 1
+
+# Make three additional redraws of each color (four total passes).
+py pixel_draw.py .\path\to\image.png --duplicate-pass --additional-passes 3
 ```
 
 ### Options
@@ -205,7 +214,7 @@ py pixel_draw.py .\path\to\image.png --duplicate-pass
 | Option | Description |
 | --- | --- |
 | `image` | Source image path. Omit it to open the GUI. |
-| `--grid N` | Cells along the grid's longest edge; must be greater than zero (default: `60`). |
+| `--grid N` | Requested cells along the grid's longest edge (default: `60`); capped to the selected area's longest screen dimension. |
 | `--colors N` | Palette size from `1` to `256`. If omitted, prompts; press Enter to use `12`. |
 | `--dither` | Apply Floyd-Steinberg dithering when mapping image colors. |
 | `--delay SECONDS` | Wait after each click; finite and nonnegative (default: `0.02`). |
@@ -213,7 +222,8 @@ py pixel_draw.py .\path\to\image.png --duplicate-pass
 | `--manual` | Select each game color manually; the tool only clicks pixels. |
 | `--palette-hex COLORS` | Comma-separated `RRGGBB` colors; automatically enables manual selection. |
 | `--recalibrate` | Capture a new drawing area and game palette instead of reusing calibration. |
-| `--duplicate-pass` | Draw each color's pixels twice before selecting the next color. |
+| `--duplicate-pass` | Enable extra per-color redraws before selecting the next color (off by default). |
+| `--additional-passes N` | Additional per-color redraws when `--duplicate-pass` is enabled (default: `1`, range: `1..100`). |
 
 The GUI and CLI both validate timing values. If the game misses clicks, try
 increasing `--click-hold` or `--delay`.
@@ -228,15 +238,16 @@ increasing `--click-hold` or `--delay`.
   pixels, but cannot establish how the target app processes screen clicks.
   Check the run log's selected rectangle, grid dimensions, and cell size;
   verify that the selection excludes unwanted borders and matches the target
-  canvas. Pixel Painting warns when the requested grid has more cells along
-  either axis than there are screen-coordinate positions in the selected
-  rectangle, because those cells must share click coordinates. This is a
-  screen-coordinate limit, not a measurement of the game's internal grid.
+  canvas. Pixel Painting limits the longest grid edge to the selected area's
+  longest screen dimension so distinct grid cells do not collapse to the same
+  click coordinate. This screen-coordinate limit is not a measurement of the
+  game's internal grid and cannot guarantee that the game will fill every
+  logical pixel.
   DPI/display scaling, window scaling, a target canvas grid that differs from
   the chosen resolution, asynchronous input handling, and missed clicks are
   also possible causes. The app does not infer the target's internal grid or
-  automatically repair gaps. The optional duplicate pass can help with
-  occasional missed clicks, but it does not fix a coordinate or grid mismatch.
+  automatically repair gaps. Configurable redraws can help with occasional
+  missed clicks, but do not fix a coordinate, DPI, or internal-grid mismatch.
 - **Drawing is too slow:** Reduce the longest grid edge or lower the delay.
   A smaller grid means fewer clicks and less detail.
 - **The target misses clicks:** Increase the click hold or delay.
@@ -253,12 +264,14 @@ py -m unittest -v
 
 Grid tests check proportional landscape and portrait dimensions, very wide or
 tall and small canvases, invalid inputs, and that the resulting dimensions are
-passed to the image quantizer. They also check when a grid exceeds the selected
-area's available screen-coordinate positions. Coordinate tests check integer
+passed to the image quantizer. They also check that oversized requested grids
+are capped to available screen coordinates. Coordinate tests check integer
 cell centers, including the first and last cells, non-divisible rectangles,
-and that clicks stay inside the selected half-open drawing area. The tests use
-mocks for screen input and image-preparation boundaries, so they do not
-establish how a particular game handles clicks or renders its canvas.
+and that clicks stay inside the selected half-open drawing area. Redraw tests
+verify multiple additional passes complete for each color before switching
+colors. The tests use mocks for screen input and image-preparation boundaries,
+so they do not establish how a particular game handles clicks or renders its
+canvas.
 
 ## Project files and generated data
 

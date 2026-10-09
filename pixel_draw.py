@@ -59,6 +59,8 @@ LEGACY_CONFIG_FILE = "bangbang_config.json"
 STOP_EVENT = threading.Event()
 DEFAULT_DELAY = 0.02
 DEFAULT_CLICK_HOLD = 0.05
+DEFAULT_ADDITIONAL_PASSES = 1
+MAX_ADDITIONAL_PASSES = 100
 LOG_PIXEL_INTERVAL = 100
 LOG_LOCK = threading.Lock()
 
@@ -547,15 +549,25 @@ def _restore_parent_behind(parent):
 
 # -------------------------------------------------------------- image processing
 def grid_for_box(box, max_cells):
-    """Return (width, height) cells, with max_cells on the longer edge."""
+    """Return proportional (width, height), capped to screen pixel positions."""
     x1, y1, x2, y2 = _validate_box(box)
     if type(max_cells) is not int or max_cells <= 0:
         raise ValueError("The longest grid edge must be a positive integer.")
     width, height = x2 - x1, y2 - y1
     longest = max(width, height)
-    grid_w = max(1, round(max_cells * width / longest))
-    grid_h = max(1, round(max_cells * height / longest))
+    effective_cells = min(max_cells, longest)
+    grid_w = max(1, round(effective_cells * width / longest))
+    grid_h = max(1, round(effective_cells * height / longest))
     return grid_w, grid_h
+
+
+def validate_additional_passes(value):
+    if (type(value) is not int
+            or not 1 <= value <= MAX_ADDITIONAL_PASSES):
+        raise ValueError(
+            "Additional redraws must be a whole number from 1 to "
+            f"{MAX_ADDITIONAL_PASSES}.")
+    return value
 
 
 def cell_center(box, grid_w, grid_h, col, row):
@@ -668,15 +680,17 @@ def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
 # ---------------------------------------------------------------- drawing
 def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
          click_hold=DEFAULT_CLICK_HOLD, pause_event=None, on_pixel=None,
-         automatic=False, on_manual_color=None, duplicate_pass=False):
+         automatic=False, on_manual_color=None, duplicate_pass=False,
+         additional_passes=DEFAULT_ADDITIONAL_PASSES):
     _require_runtime_deps("numpy", "pyautogui")
     box = _validate_box(box)
     grid_h, grid_w = idx.shape
+    additional_passes = validate_additional_passes(additional_passes)
     todo = [c for c in range(n_colors)
             if c not in skip and np.any(idx == c)]
     skipped_pixels = int(sum(np.count_nonzero(idx == c) for c in skip))
     total_pixels = int(sum(np.count_nonzero(idx == c) for c in todo))
-    pass_count = 2 if duplicate_pass else 1
+    pass_count = 1 + additional_passes if duplicate_pass else 1
     planned_clicks = total_pixels * pass_count
     completed_clicks = 0
 
@@ -771,10 +785,11 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                     f"Stopped while selecting palette color #{ci + 1}.")
         pixels = sorted(zip(ys, xs))
         for pass_number in range(pass_count):
-            pass_label = (
-                ("first pass" if pass_number == 0 else "duplicate pass")
-                if duplicate_pass else "drawing")
+            pass_label = "drawing"
             if duplicate_pass:
+                pass_label = (
+                    "first pass" if pass_number == 0
+                    else f"redraw {pass_number}/{additional_passes}")
                 log_event(
                     "COLOR",
                     f"Color #{ci + 1}: starting {pass_label} "
@@ -900,6 +915,9 @@ class DrawingApp:
         self.auto_select_remaining_enabled = tk.BooleanVar(value=False)
         self.duplicate_pass_enabled = tk.BooleanVar(
             value=args.duplicate_pass)
+        self.additional_passes = tk.StringVar(
+            value=str(getattr(
+                args, "additional_passes", DEFAULT_ADDITIONAL_PASSES)))
         self._prepared_image = None
         self._preview_signature = None
         self.status = tk.StringVar(
@@ -920,6 +938,7 @@ class DrawingApp:
         self.root.bind_all("<Button-4>", self._on_mousewheel)
         self.root.bind_all("<Button-5>", self._on_mousewheel)
         self._update_grid_summary()
+        self._update_duplicate_pass_controls()
         self._update_click_estimate()
         self.root.after(80, self._process_events)
 
@@ -1025,7 +1044,7 @@ class DrawingApp:
             padding=10)
         settings.grid(row=2, column=0, sticky="ew", pady=5)
         self.grid_entry = self._add_setting(
-            settings, "Grid longest edge (cells)", self.grid_count, 0, row=0)
+            settings, "Grid max (cells)", self.grid_count, 0, row=0)
         self.grid_entry.bind("<Return>", self._refresh_grid_preview)
         self.grid_entry.bind("<FocusOut>", self._refresh_grid_preview)
         self.grid_entry.bind("<KeyRelease>", self._grid_input_changed)
@@ -1033,9 +1052,9 @@ class DrawingApp:
             settings, "Palette size (colors)", self.color_count, 3, row=0)
         self.color_entry.bind("<KeyRelease>", self._palette_count_changed)
         self._add_setting(
-            settings, "Wait after click (s)", self.delay, 0, row=1)
+            settings, "Delay after click (s)", self.delay, 0, row=1)
         self._add_setting(
-            settings, "Mouse press duration (s)", self.click_hold, 3, row=1)
+            settings, "Click hold (s)", self.click_hold, 3, row=1)
         ttk.Checkbutton(
             settings, text="Use dithering", variable=self.use_dither,
             command=self._invalidate_preview).grid(
@@ -1046,16 +1065,26 @@ class DrawingApp:
             command=self._update_manual_options).grid(
                 row=2, column=2, columnspan=4, sticky="w", pady=(8, 0))
         self.auto_select_remaining_check = ttk.Checkbutton(
-                settings, text="After first manual color, auto-select the rest",
+            settings, text="After first manual color, auto-select the rest",
             variable=self.auto_select_remaining_enabled)
         self.auto_select_remaining_check.grid(
             row=3, column=2, columnspan=4, sticky="w", pady=(5, 0))
-        ttk.Checkbutton(
+        ttk.Label(
+            settings, text="Additional redraws per color").grid(
+                row=3, column=0, sticky="w")
+        self.additional_passes_entry = ttk.Entry(
+            settings, textvariable=self.additional_passes, width=7)
+        self.additional_passes_entry.grid(
+            row=3, column=1, sticky="w", padx=(3, 12))
+        self.additional_passes_entry.bind(
+            "<KeyRelease>", lambda _event: self._update_click_estimate())
+        self.duplicate_pass_check = ttk.Checkbutton(
             settings,
-            text="Draw every color twice (repeat its pixels before next color)",
+            text="Repeat each color's pixels before selecting the next color",
             variable=self.duplicate_pass_enabled,
-            command=self._update_click_estimate).grid(
-                row=4, column=0, columnspan=6, sticky="w", pady=(5, 0))
+            command=self._update_duplicate_pass_controls)
+        self.duplicate_pass_check.grid(
+            row=4, column=0, columnspan=6, sticky="w", pady=(5, 0))
         ttk.Label(
             settings, textvariable=self.grid_summary,
             style="Progress.TLabel", wraplength=520).grid(
@@ -1260,9 +1289,13 @@ class DrawingApp:
             self._update_click_estimate(idx)
             return
         total_cells = grid_w * grid_h
+        x1, y1, x2, y2 = _validate_box(box)
+        requested_cells = self._parse_grid_count()
+        screen_limit = max(x2 - x1, y2 - y1)
         warning = (
-            "\nWarning: grid is finer than screen pixels; clicks repeat."
-            if grid_exceeds_screen_area(box, (grid_w, grid_h)) else "")
+            f"\nRequested {requested_cells} cells; capped at {screen_limit} "
+            "to keep screen click positions distinct."
+            if requested_cells > screen_limit else "")
         self.grid_summary.set(
             f"Grid resolution: {grid_w} \u00d7 {grid_h} cells | "
             f"Total: {total_cells:,} cells{warning}")
@@ -1271,9 +1304,14 @@ class DrawingApp:
     def _update_click_estimate(self, idx=None):
         if idx is None and self._prepared_image is not None:
             idx = self._prepared_image["idx"]
-        duplicate_count = 2 if self.duplicate_pass_enabled.get() else 1
+        try:
+            duplicate_count = self._click_pass_count()
+        except ValueError:
+            duplicate_count = None
         skipped = self._skipped_color_indices()
-        if idx is not None:
+        if duplicate_count is None:
+            estimate = "unavailable"
+        elif idx is not None:
             pixel_clicks = sum(
                 int(np.count_nonzero(idx == color))
                 for color in range(len(self.config.get("palette_rgb", [])))
@@ -1289,7 +1327,28 @@ class DrawingApp:
                 estimate = "unavailable"
         self.click_estimate.set(
             f"Estimated pixel clicks: {estimate}"
-            f"{' (2 passes)' if duplicate_count == 2 else ''}")
+            + (f" ({duplicate_count} passes)"
+               if duplicate_count and duplicate_count > 1 else ""))
+
+    def _click_pass_count(self):
+        if not self.duplicate_pass_enabled.get():
+            return 1
+        return 1 + self._parse_additional_passes()
+
+    def _parse_additional_passes(self):
+        try:
+            additional_passes = int(self.additional_passes.get().strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Additional redraws must be a whole number from 1 to "
+                f"{MAX_ADDITIONAL_PASSES}.") from exc
+        return validate_additional_passes(additional_passes)
+
+    def _update_duplicate_pass_controls(self):
+        enabled = self.duplicate_pass_enabled.get()
+        self.additional_passes_entry.configure(
+            state="normal" if enabled else "disabled")
+        self._update_click_estimate()
 
     @staticmethod
     def _add_setting(parent, label, variable, column, row=0):
@@ -1504,6 +1563,11 @@ class DrawingApp:
                 idx, box, palette = self._get_image_data()
             delay = float(self.delay.get())
             click_hold = float(self.click_hold.get())
+            additional_passes = (
+                self._parse_additional_passes()
+                if self.duplicate_pass_enabled.get()
+                else DEFAULT_ADDITIONAL_PASSES
+            )
             _validate_timing(delay, click_hold)
         except Exception as exc:
             messagebox.showerror("Cannot start drawing", str(exc))
@@ -1546,7 +1610,8 @@ class DrawingApp:
             f"Prepared grid {idx.shape[1]}x{idx.shape[0]} in area {box}; "
             f"palette={len(palette)}, click hold={click_hold * 1000:.0f}ms, "
             f"delay={delay * 1000:.1f}ms, manual-color-mode={manual}, "
-            f"duplicate-pass={self.duplicate_pass_enabled.get()}.")
+            f"duplicate-pass={self.duplicate_pass_enabled.get()}, "
+            f"additional-redraws={additional_passes}.")
         if manual:
             log_event(
                 "MANUAL",
@@ -1589,19 +1654,22 @@ class DrawingApp:
         self.worker = threading.Thread(
             target=self._draw_worker,
             args=(idx, box, palette, palette_points, skip_colors, manual,
-                  delay, click_hold, self.duplicate_pass_enabled.get()),
+                  delay, click_hold, self.duplicate_pass_enabled.get(),
+                  additional_passes),
             daemon=True)
         self.worker.start()
 
     def _draw_worker(self, idx, box, palette, palette_points, skip_colors,
-                     manual, delay, click_hold, duplicate_pass):
+                     manual, delay, click_hold, duplicate_pass,
+                     additional_passes):
         try:
             completed = draw(
                 idx, box, palette_points, skip_colors, delay, len(palette),
                 manual,
                 click_hold, self.pause_event, self._pixel_completed,
                 automatic=True, on_manual_color=self._wait_for_manual_color,
-                duplicate_pass=duplicate_pass)
+                duplicate_pass=duplicate_pass,
+                additional_passes=additional_passes)
             state = (
                 "Drawing complete." if completed
                 else "Drawing stopped before completion.")
@@ -1789,7 +1857,11 @@ def main():
         help="select the drawing area and palette again")
     ap.add_argument(
         "--duplicate-pass", action="store_true",
-        help="draw every color's pixels twice before selecting the next color")
+        help="redraw each color's pixels before selecting the next color")
+    ap.add_argument(
+        "--additional-passes", type=int, default=DEFAULT_ADDITIONAL_PASSES,
+        help="extra redraws per color with --duplicate-pass "
+             "(default: 1; range: 1..100)")
     a = ap.parse_args()
     if a.grid <= 0:
         ap.error("--grid must be greater than zero")
@@ -1799,6 +1871,10 @@ def main():
         ap.error(str(exc))
     if a.colors is not None and not 1 <= a.colors <= 256:
         ap.error("--colors must be between 1 and 256")
+    try:
+        validate_additional_passes(a.additional_passes)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     if a.image is None:
         run_gui(a)
@@ -1885,12 +1961,18 @@ def main():
     print(
         f"Drawing grid: {grid_size[0]} x {grid_size[1]} "
         "(width x height).")
+    screen_grid_limit = max(box[2] - box[0], box[3] - box[1])
+    if a.grid > screen_grid_limit:
+        print(
+            f"Requested {a.grid} cells on the longest edge; limited to "
+            f"{screen_grid_limit} by the selected area's screen resolution.")
     log_event(
         "GRID",
         f"Resolution={grid_size[0]}x{grid_size[1]} cells; "
         f"selected area={box}; cell size="
         f"{(box[2] - box[0]) / grid_size[0]:.3f}x"
-        f"{(box[3] - box[1]) / grid_size[1]:.3f} screen pixels.")
+        f"{(box[3] - box[1]) / grid_size[1]:.3f} screen pixels; "
+        f"requested longest edge={a.grid}, screen limit={screen_grid_limit}.")
     save_preview(idx, cols)
     counts = np.bincount(idx[idx >= 0].astype(int), minlength=len(cols))
     used_colors = int(np.count_nonzero(counts))
@@ -1921,8 +2003,10 @@ def main():
             for color in range(len(cols))
             if color not in skip)
         if a.duplicate_pass:
-            total *= 2
-            print("Duplicate pass enabled: each color will be drawn twice.")
+            total *= 1 + a.additional_passes
+            print(
+                f"Redraw enabled: {a.additional_passes} additional pass(es) "
+                f"per color ({1 + a.additional_passes} total passes).")
         print(f"Approximately {total} clicks.")
         if manual:
             print("Select each color manually; enter y to draw or s to skip.")
@@ -1932,7 +2016,8 @@ def main():
                 "remaining colors.")
         completed = draw(
             idx, box, pts, skip, a.delay, len(cols), manual, a.click_hold,
-            duplicate_pass=a.duplicate_pass)
+            duplicate_pass=a.duplicate_pass,
+            additional_passes=a.additional_passes)
         if completed:
             print("Drawing complete.")
         else:
