@@ -8,7 +8,8 @@ Workflow:
   1. Select an image and the on-screen drawing area.
   2. Capture the game's palette by clicking each palette swatch.
   3. Review the generated ``preview.png`` and its color legend.
-  4. Start drawing; use F11 to pause/resume and F12 to stop at any time.
+  4. Start drawing; use F10 to confirm manual colors, F11 to pause/resume,
+     and F12 to stop at any time.
 
 Emergency failsafe: move the pointer to the top-left corner of the screen.
 """
@@ -157,7 +158,7 @@ def _readline_or_stop(prompt):
     return None
 
 
-def _start_emergency_listener(on_pause_toggle=None):
+def _start_emergency_listener(on_pause_toggle=None, on_manual_confirm=None):
     try:
         from pynput import keyboard
     except ImportError as exc:
@@ -177,6 +178,13 @@ def _start_emergency_listener(on_pause_toggle=None):
             if on_pause_toggle is not None:
                 log_event("HOTKEY", "F11 pressed; pause/resume requested.")
                 on_pause_toggle()
+        elif key == keyboard.Key.f10 and key not in pressed:
+            pressed.add(key)
+            if on_manual_confirm is not None:
+                log_event(
+                    "HOTKEY",
+                    "F10 pressed; confirming the manually selected color.")
+                on_manual_confirm()
 
     def on_release(key):
         pressed.discard(key)
@@ -796,7 +804,7 @@ class DrawingApp:
             settings, text="Use dithering", variable=self.use_dither).grid(
                 row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Checkbutton(
-            settings, text="Select each game color manually",
+            settings, text="Select each game color manually (confirm with F10)",
             variable=self.manual).grid(
                 row=1, column=2, columnspan=3, sticky="w", pady=(8, 0))
 
@@ -845,7 +853,7 @@ class DrawingApp:
             command=self._confirm_manual_color, state="disabled")
         self.manual_selected_button.pack(side="left", padx=6)
         ttk.Label(
-            controls, text="F11: Pause/Resume   |   F12: Stop",
+            controls, text="F10: Confirm color   |   F11: Pause/Resume   |   F12: Stop",
             style="Progress.TLabel").pack(side="right", padx=(8, 0))
 
         ttk.Label(
@@ -1068,6 +1076,18 @@ class DrawingApp:
         self.manual_color_event = None
         palette_points = self.config.get("palette_pts")
         manual = self.manual.get() or palette_points is None
+        active_colors = [
+            color for color in range(len(palette))
+            if color not in self._skipped_color_indices()
+            and np.any(idx == color)
+        ]
+        if not active_colors:
+            message = (
+                "No pixels remain to draw. Clear one or more colors from "
+                "'Colors to skip' and generate the preview again.")
+            log_event("ERROR", message)
+            messagebox.showerror("Nothing to draw", message)
+            return
         if not manual and len(palette_points) != len(palette):
             messagebox.showerror(
                 "Invalid palette",
@@ -1077,12 +1097,18 @@ class DrawingApp:
         self.progress.set("Starting from the first pixel")
         self._set_running_controls(True)
         self._set_status(
-            "Switch to the drawing app. F11 pauses/resumes; F12 stops.")
+            "Switch to the drawing app. In manual-color mode use F10 to "
+            "confirm each swatch; F11 pauses/resumes; F12 stops.")
         log_event(
             "START",
             f"Prepared grid {idx.shape[1]}x{idx.shape[0]} in area {box}; "
             f"palette={len(palette)}, click hold={click_hold * 1000:.0f}ms, "
-            f"delay={delay * 1000:.1f}ms.")
+            f"delay={delay * 1000:.1f}ms, manual-color-mode={manual}.")
+        if manual:
+            log_event(
+                "MANUAL",
+                "For each color: choose its game swatch, then press F10 "
+                "to begin drawing that color.")
         self.root.lower()
         log_event(
             "COUNTDOWN",
@@ -1142,6 +1168,10 @@ class DrawingApp:
         event = threading.Event()
         self.manual_color_event = event
         self.events.put(("manual_color", color_index + 1))
+        log_event(
+            "MANUAL",
+            f"Waiting for game color #{color_index + 1}; select its swatch "
+            "and press F10.")
         while not STOP_EVENT.is_set():
             if not _wait_until_running(self.pause_event):
                 return False
@@ -1156,6 +1186,14 @@ class DrawingApp:
             self.manual_selected_button.config(state="disabled")
             self._set_status("Color confirmed; drawing will continue.")
             log_event("COLOR", "Manual game color selection confirmed.")
+
+    def request_manual_confirm(self):
+        event = self.manual_color_event
+        if event is None:
+            log_event("MANUAL", "F10 ignored; no color is awaiting confirmation.")
+            return
+        event.set()
+        log_event("MANUAL", "F10 confirmed the selected game color.")
 
     def _pixel_completed(self, color, number, total, x, y):
         self.last_pixel = (color, number, x, y)
@@ -1187,7 +1225,7 @@ class DrawingApp:
                 elif event == "manual_color":
                     self._set_status(
                         f"Select color #{value} in the game, then click "
-                        "'Color selected in game'.")
+                        "'Color selected in game' or press F10.")
                     self.manual_selected_button.config(state="normal")
                 elif event == "pause_toggle":
                     if self.worker is not None and self.worker.is_alive():
@@ -1249,7 +1287,8 @@ def run_gui(args):
     _require_runtime_deps("tkinter", "Pillow", "numpy", "pyautogui")
     root = tk.Tk()
     app = DrawingApp(root, args)
-    listener = _start_emergency_listener(app.request_pause_toggle)
+    listener = _start_emergency_listener(
+        app.request_pause_toggle, app.request_manual_confirm)
     root.protocol("WM_DELETE_WINDOW", lambda: app.close(listener))
     root.mainloop()
 
