@@ -57,9 +57,163 @@ class _Screenshot:
 
 
 class PixelPaintingTests(unittest.TestCase):
+    def test_grid_for_box_preserves_landscape_and_portrait_proportions(self):
+        self.assertEqual(pixel_draw.grid_for_box((0, 0, 101, 51), 10),
+                         (10, 5))
+        self.assertEqual(pixel_draw.grid_for_box((0, 0, 40, 100), 10),
+                         (4, 10))
+
+    def test_grid_for_box_handles_narrow_area_and_rejects_invalid_input(self):
+        self.assertEqual(pixel_draw.grid_for_box((4, 8, 5, 1008), 60),
+                         (1, 60))
+        for box, max_cells in (
+                ((0, 0, 0, 10), 10),
+                ((0, 0, 10, 10), 0),
+                ((0, 0, 10, 10), 1.5)):
+            with self.subTest(box=box, max_cells=max_cells):
+                with self.assertRaises(ValueError):
+                    pixel_draw.grid_for_box(box, max_cells)
+
+    def test_cell_center_maps_first_middle_and_last_in_non_divisible_box(self):
+        box = (10, 20, 21, 29)
+        self.assertEqual(pixel_draw.cell_center(box, 4, 3, 0, 0), (11, 21))
+        self.assertEqual(pixel_draw.cell_center(box, 4, 3, 2, 1), (16, 24))
+        self.assertEqual(pixel_draw.cell_center(box, 4, 3, 3, 2), (19, 27))
+
+    def test_cell_center_stays_inside_small_landscape_and_portrait_boxes(self):
+        for box, grid_w, grid_h in (
+                ((-2, 4, -1, 5), 4, 3),
+                ((4, -2, 5, -1), 3, 4),
+                ((8, 9, 9, 10), 1, 1)):
+            x1, y1, x2, y2 = box
+            for row in range(grid_h):
+                for col in range(grid_w):
+                    with self.subTest(box=box, col=col, row=row):
+                        x, y = pixel_draw.cell_center(
+                            box, grid_w, grid_h, col, row)
+                        self.assertTrue(x1 <= x < x2)
+                        self.assertTrue(y1 <= y < y2)
+
+    def test_cell_center_rejects_cells_outside_grid(self):
+        with self.assertRaisesRegex(ValueError, "inside the drawing grid"):
+            pixel_draw.cell_center((0, 0, 5, 5), 2, 2, 2, 0)
+
+    def test_prepare_image_uses_shared_grid_and_box(self):
+        expected_indices = object()
+        with patch.object(
+                pixel_draw, "quantize", return_value=expected_indices) as quant:
+            idx, grid_size, box, palette = pixel_draw.prepare_image(
+                "image.png", [0, 0, 101, 51], 10, [[0, 0, 0]], False)
+
+        self.assertIs(idx, expected_indices)
+        self.assertEqual(grid_size, (10, 5))
+        self.assertEqual(box, (0, 0, 101, 51))
+        self.assertEqual(palette, [(0, 0, 0)])
+        quant.assert_called_once_with(
+            "image.png", (10, 5), [(0, 0, 0)], False)
+
+    def test_saved_configuration_rejects_invalid_area_and_palette_positions(self):
+        with self.assertRaisesRegex(ValueError, "positive width and height"):
+            pixel_draw._validate_config({"box": [1, 2, 1, 4]})
+        with self.assertRaisesRegex(ValueError, "one integer screen"):
+            pixel_draw._validate_config({
+                "palette_rgb": [[0, 0, 0]],
+                "palette_pts": [[10, 20], [30, 40]],
+            })
+
+    def test_palette_resize_preserves_valid_skips_and_reports_removed_indices(self):
+        config = {"skip_colors": [0, 2, 4]}
+
+        removed = pixel_draw._preserve_skip_colors(config, 3)
+
+        self.assertEqual(config["skip_colors"], [0, 2])
+        self.assertEqual(removed, [4])
+
+    def test_click_estimate_accounts_for_skipped_colors_and_duplicate_pass(self):
+        class PixelCounts:
+            def __eq__(self, color):
+                return (2, 2, 2)[color]
+
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.config = {
+            "palette_rgb": [(0, 0, 0), (1, 1, 1), (2, 2, 2)],
+            "skip_colors": [1],
+        }
+        app._prepared_image = {"idx": PixelCounts()}
+        app.duplicate_pass_enabled = Mock()
+        app.duplicate_pass_enabled.get.return_value = True
+        app.click_estimate = Mock()
+
+        with patch.object(
+                pixel_draw, "np",
+                types.SimpleNamespace(count_nonzero=lambda count: count)):
+            app._update_click_estimate()
+
+        app.click_estimate.set.assert_called_once_with(
+            "Estimated pixel clicks: 8 (2 passes)")
+
+    def test_grid_enter_or_focus_refreshes_summary_and_preview(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.grid_count = Mock()
+        app.grid_count.get.return_value = "10"
+        app.grid_summary = Mock()
+        app.click_estimate = Mock()
+        app.duplicate_pass_enabled = Mock()
+        app.duplicate_pass_enabled.get.return_value = False
+        app.config = {
+            "box": (0, 0, 101, 51),
+            "palette_rgb": [(0, 0, 0)],
+            "skip_colors": [],
+        }
+        app._prepared_image = None
+        app.image_path = Mock()
+        app.image_path.get.return_value = "image.png"
+        app._make_preview = Mock()
+        app.status = Mock()
+
+        result = app._refresh_grid_preview()
+
+        self.assertEqual(result, "break")
+        self.assertIn("10 \u00d7 5 cells", app.grid_summary.set.call_args.args[0])
+        app._make_preview.assert_called_once_with()
+
+    def test_palette_recapture_preserves_skips_and_reports_removed_choices(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.color_count = Mock()
+        app.color_count.get.return_value = "2"
+        app.root = Mock()
+        app.config = {
+            "box": (0, 0, 100, 50),
+            "palette_rgb": [(0, 0, 0), (255, 255, 255), (255, 0, 0)],
+            "palette_pts": [(10, 10), (20, 20), (30, 30)],
+            "skip_colors": [0, 2],
+        }
+        app.image_path = Mock()
+        app.image_path.get.return_value = ""
+        app._invalidate_preview = Mock()
+        app._refresh_palette_list = Mock()
+        app._save_config = Mock()
+        app._set_status = Mock()
+
+        with (
+            patch.object(
+                pixel_draw, "pick_palette",
+                return_value=([(11, 11), (22, 22)],
+                              [(1, 2, 3), (4, 5, 6)])),
+            patch.object(pixel_draw, "log_event"),
+        ):
+            app._select_palette()
+
+        self.assertEqual(app.config["skip_colors"], [0])
+        app._refresh_palette_list.assert_called_once_with()
+        self.assertIn(
+            "Removed out-of-range skip choices (#3)",
+            app._set_status.call_args.args[0])
+
     def test_legacy_calibration_filename_is_still_loaded(self):
-        calibration = {"palette_rgb": [[0, 0, 0]]}
-        mocked_open = mock_open(read_data='{"palette_rgb": [[0, 0, 0]]}')
+        calibration = {"palette_rgb": [(0, 0, 0)], "palette_pts": None}
+        mocked_open = mock_open(
+            read_data='{"palette_rgb": [[0, 0, 0]], "palette_pts": null}')
 
         with (
             patch.object(pixel_draw.os.path, "exists", return_value=False),
@@ -206,6 +360,198 @@ class PixelPaintingTests(unittest.TestCase):
         self.assertEqual(
             [(event[0], event[1], event[2]) for event in progress],
             [(0, 1, 2), (0, 2, 2), (1, 1, 2), (1, 2, 2)])
+
+    def test_interrupted_duplicate_pass_logs_completed_and_planned_clicks(self):
+        def click_then_interrupt(
+                _x, _y, _hold, _delay, _pause_event, callback=None):
+            if click.call_count == 2 and callback is not None:
+                callback()
+                return True
+            return click.call_count < 3
+
+        with (
+            patch.object(pixel_draw, "_require_runtime_deps"),
+            patch.object(pixel_draw, "np", _ArrayOps),
+            patch.object(pixel_draw, "_click") as click,
+            patch.object(pixel_draw, "log_event") as log,
+        ):
+            click.side_effect = click_then_interrupt
+            pixel_draw.STOP_EVENT.clear()
+            completed = pixel_draw.draw(
+                _SinglePixelGrid(), (10, 20, 30, 40),
+                [(100, 100)], set(), 0.02, 1,
+                click_hold=0.05, automatic=True, duplicate_pass=True)
+
+        self.assertFalse(completed)
+        self.assertTrue(any(
+            call_args.args[0] == "DRAW"
+            and "completed 1/2 pixel clicks" in call_args.args[1]
+            for call_args in log.call_args_list))
+
+    def test_interactive_skip_reduces_final_click_plan(self):
+        def complete_click(_x, _y, _hold, _delay, _pause_event, callback=None):
+            if callback is not None:
+                callback()
+            return True
+
+        with (
+            patch.object(pixel_draw, "_require_runtime_deps"),
+            patch.object(pixel_draw, "np", _ArrayOps),
+            patch.object(pixel_draw, "_click", side_effect=complete_click),
+            patch.object(pixel_draw, "ask_yes", side_effect=("s", "y")),
+            patch.object(pixel_draw, "countdown", return_value=True),
+            patch.object(pixel_draw, "log_event") as log,
+        ):
+            pixel_draw.STOP_EVENT.clear()
+            completed = pixel_draw.draw(
+                _TwoColorGrid(), (10, 20, 30, 40),
+                [(100, 100), (200, 200)], set(), 0.02, 2,
+                manual=True, click_hold=0.05, duplicate_pass=True)
+
+        self.assertTrue(completed)
+        self.assertTrue(any(
+            call_args.args[0] == "DRAW"
+            and "Completed 2/2 planned pixel clicks; 1 pixels skipped."
+            in call_args.args[1]
+            for call_args in log.call_args_list))
+
+    def test_grid_change_invalidates_cached_preview_and_reports_valid_grid(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app._prepared_image = {"idx": object()}
+        app._preview_signature = ("old",)
+        app.preview_source = object()
+        app.preview_image = object()
+        app.preview_label = Mock()
+        app.grid_summary = Mock()
+        app.click_estimate = Mock()
+        app.status = Mock()
+        app.grid_count = Mock()
+        app.grid_count.get.return_value = "10"
+        app.duplicate_pass_enabled = Mock()
+        app.duplicate_pass_enabled.get.return_value = False
+        app.config = {"box": (0, 0, 101, 51), "palette_rgb": []}
+
+        app._invalidate_preview()
+
+        self.assertIsNone(app._prepared_image)
+        self.assertIsNone(app._preview_signature)
+        self.assertIsNone(app.preview_source)
+        self.assertIsNone(app.preview_image)
+        app.grid_summary.set.assert_called_with(
+            "Grid resolution: 10 \u00d7 5 cells | Total: 50 cells")
+
+    def test_image_data_cache_reuses_preview_quantization(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.image_path = Mock()
+        app.image_path.get.return_value = "image.png"
+        app.color_count = Mock()
+        app.color_count.get.return_value = "1"
+        app.grid_count = Mock()
+        app.grid_count.get.return_value = "10"
+        app.use_dither = Mock()
+        app.use_dither.get.return_value = False
+        app.config = {
+            "box": [0, 0, 101, 51],
+            "palette_rgb": [[0, 0, 0]],
+        }
+        app._prepared_image = None
+        first_indices = object()
+        second_indices = object()
+        prepared_values = [
+            (first_indices, (10, 5), (0, 0, 101, 51), [(0, 0, 0)]),
+            (second_indices, (8, 4), (0, 0, 101, 51), [(0, 0, 0)]),
+        ]
+        stat = types.SimpleNamespace(st_size=10, st_mtime_ns=20)
+
+        with (
+            patch.object(pixel_draw.os.path, "isfile", return_value=True),
+            patch.object(pixel_draw.os, "stat", return_value=stat),
+            patch.object(
+                pixel_draw, "prepare_image",
+                side_effect=prepared_values) as prepare,
+        ):
+            first = app._get_image_data()
+            second = app._get_image_data()
+            app.grid_count.get.return_value = "8"
+            third = app._get_image_data()
+
+        self.assertIs(first[0], first_indices)
+        self.assertIs(second[0], first_indices)
+        self.assertIs(third[0], second_indices)
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(prepare.call_args.args[2], 8)
+
+    def test_palette_count_mismatch_blocks_preview_image_preparation(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.image_path = Mock()
+        app.image_path.get.return_value = "image.png"
+        app.color_count = Mock()
+        app.color_count.get.return_value = "2"
+        app.grid_count = Mock()
+        app.grid_count.get.return_value = "10"
+        app.use_dither = Mock()
+        app.use_dither.get.return_value = False
+        app.config = {
+            "box": (0, 0, 100, 50),
+            "palette_rgb": [[0, 0, 0]],
+            "palette_pts": [[10, 10]],
+        }
+        app._prepared_image = None
+
+        with patch.object(pixel_draw.os.path, "isfile", return_value=True):
+            with self.assertRaisesRegex(ValueError, "Capture the palette again"):
+                app._get_image_data()
+
+    def test_click_reports_a_released_press_even_when_stop_arrives_during_it(self):
+        callback = Mock()
+        stop = pixel_draw.STOP_EVENT
+        stop.clear()
+        automation = types.SimpleNamespace(
+            moveTo=Mock(),
+            mouseDown=Mock(side_effect=stop.set),
+            mouseUp=Mock())
+
+        try:
+            with (
+                patch.object(pixel_draw, "pyautogui", automation),
+                patch.object(pixel_draw, "_wait_until_running", return_value=True),
+            ):
+                result = pixel_draw._click(
+                    5, 7, 0.05, 0, on_click=callback)
+        finally:
+            stop.clear()
+
+        self.assertFalse(result)
+        callback.assert_called_once_with()
+
+    def test_invalid_grid_input_does_not_refresh_or_use_stale_preview(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.grid_count = Mock()
+        app.grid_count.get.return_value = ""
+        app.grid_summary = Mock()
+        app.click_estimate = Mock()
+        app.duplicate_pass_enabled = Mock()
+        app.duplicate_pass_enabled.get.return_value = False
+        app.status = Mock()
+        app.config = {"box": (0, 0, 100, 50)}
+        app._prepared_image = {"idx": object()}
+        app._preview_signature = ("stale",)
+        app.preview_source = object()
+        app.preview_image = object()
+        app.preview_label = Mock()
+        app._make_preview = Mock()
+
+        result = app._refresh_grid_preview()
+
+        self.assertEqual(result, "break")
+        app._make_preview.assert_not_called()
+        self.assertIsNone(app._prepared_image)
+        self.assertIsNone(app._preview_signature)
+        self.assertIsNone(app.preview_source)
+        self.assertIsNone(app.preview_image)
+        self.assertIn(
+            "positive whole number",
+            app.status.set.call_args.args[0])
 
     def test_skip_color_parser_accepts_multiple_numbers_and_whitespace(self):
         self.assertEqual(pixel_draw._parse_skip_colors(" 1, 3 ", 4),

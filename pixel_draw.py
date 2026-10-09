@@ -71,9 +71,85 @@ def _load_config():
     )
     try:
         with open(config_path, encoding="utf-8") as config_file:
-            return json.load(config_file)
+            config = json.load(config_file)
     except FileNotFoundError:
         return {}
+    return _validate_config(config)
+
+
+def _validate_box(box):
+    if (not isinstance(box, (list, tuple)) or len(box) != 4
+            or any(type(value) is not int for value in box)):
+        raise ValueError(
+            "Saved drawing area must contain four integer screen coordinates.")
+    x1, y1, x2, y2 = box
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError(
+            "Saved drawing area must have positive width and height.")
+    return tuple(box)
+
+
+def _validate_palette(palette):
+    if not isinstance(palette, (list, tuple)) or not 1 <= len(palette) <= 256:
+        raise ValueError("Saved palette must contain between 1 and 256 colors.")
+    normalized = []
+    for color in palette:
+        if (not isinstance(color, (list, tuple)) or len(color) != 3
+                or any(type(channel) is not int or not 0 <= channel <= 255
+                       for channel in color)):
+            raise ValueError(
+                "Each saved palette color must contain three integer RGB "
+                "values from 0 to 255.")
+        normalized.append(tuple(color))
+    return normalized
+
+
+def _validate_config(config):
+    if not isinstance(config, dict):
+        raise ValueError("Saved calibration must be a JSON object.")
+    validated = dict(config)
+    if "box" in validated:
+        validated["box"] = _validate_box(validated["box"])
+    if "palette_rgb" in validated:
+        validated["palette_rgb"] = _validate_palette(
+            validated["palette_rgb"])
+        if "palette_pts" not in validated:
+            raise ValueError(
+                "Saved palette calibration is missing its screen positions "
+                "or an explicit null value for a manual palette.")
+    if "palette_pts" in validated and validated["palette_pts"] is not None:
+        points = validated["palette_pts"]
+        palette = validated.get("palette_rgb")
+        if (not isinstance(points, (list, tuple)) or palette is None
+                or len(points) != len(palette)
+                or any(not isinstance(point, (list, tuple))
+                       or len(point) != 2
+                       or any(type(value) is not int for value in point)
+                       for point in points)):
+            raise ValueError(
+                "Saved palette positions must contain one integer screen "
+                "coordinate pair per palette color.")
+        validated["palette_pts"] = [tuple(point) for point in points]
+    if "skip_colors" in validated:
+        skipped = validated["skip_colors"]
+        palette = validated.get("palette_rgb", [])
+        if (not isinstance(skipped, list)
+                or any(type(index) is not int or not 0 <= index < len(palette)
+                       for index in skipped)):
+            raise ValueError(
+                "Saved skipped colors must be valid zero-based palette "
+                "indices.")
+    return validated
+
+
+def _preserve_skip_colors(config, palette_size):
+    """Retain in-range skip indices and return those removed."""
+    saved = config.get("skip_colors", [])
+    retained = [index for index in saved if index < palette_size]
+    removed = [index for index in saved if index >= palette_size]
+    if "skip_colors" in config or retained:
+        config["skip_colors"] = retained
+    return removed
 
 
 def log_event(category, message):
@@ -471,29 +547,52 @@ def _restore_parent_behind(parent):
 
 # -------------------------------------------------------------- image processing
 def grid_for_box(box, max_cells):
-    """Return rectangular grid dimensions proportional to the selected box."""
-    x1, y1, x2, y2 = box
+    """Return (width, height) cells, with max_cells on the longer edge."""
+    x1, y1, x2, y2 = _validate_box(box)
+    if type(max_cells) is not int or max_cells <= 0:
+        raise ValueError("The longest grid edge must be a positive integer.")
     width, height = x2 - x1, y2 - y1
-    if width <= 0 or height <= 0:
-        raise ValueError("The drawing area must have a positive width and height.")
     longest = max(width, height)
     grid_w = max(1, round(max_cells * width / longest))
     grid_h = max(1, round(max_cells * height / longest))
     return grid_w, grid_h
 
 
+def cell_center(box, grid_w, grid_h, col, row):
+    """Map a cell to its center pixel in the half-open box [x1,x2) x [y1,y2)."""
+    x1, y1, x2, y2 = _validate_box(box)
+    if (type(grid_w) is not int or type(grid_h) is not int
+            or grid_w <= 0 or grid_h <= 0):
+        raise ValueError("Grid width and height must be positive integers.")
+    if (type(col) is not int or type(row) is not int
+            or not 0 <= col < grid_w or not 0 <= row < grid_h):
+        raise ValueError("Cell column and row must be inside the drawing grid.")
+    width, height = x2 - x1, y2 - y1
+    px = x1 + ((2 * col + 1) * width) // (2 * grid_w)
+    py = y1 + ((2 * row + 1) * height) // (2 * grid_h)
+    return px, py
+
+
+def prepare_image(img_path, box, max_cells, palette_rgb, dither):
+    """Quantize once with the grid derived from this drawing rectangle."""
+    validated_box = _validate_box(box)
+    grid_size = grid_for_box(validated_box, max_cells)
+    palette = _validate_palette(palette_rgb)
+    idx = quantize(img_path, grid_size, palette, dither)
+    return idx, grid_size, validated_box, palette
+
+
 def quantize(img_path, grid_size, palette_rgb, dither):
     """Resize the full image to the selected box's grid, then map to its palette."""
     _require_runtime_deps("numpy", "Pillow")
-    if not palette_rgb:
-        raise ValueError("The palette cannot be empty.")
+    palette_rgb = _validate_palette(palette_rgb)
     palette = np.asarray(palette_rgb, dtype=np.float32)
-    if palette.ndim != 2 or palette.shape[1] != 3:
-        raise ValueError("Each palette color must contain three RGB values.")
 
-    grid_w, grid_h = grid_size
-    if grid_w <= 0 or grid_h <= 0:
+    if (not isinstance(grid_size, (list, tuple)) or len(grid_size) != 2
+            or any(type(value) is not int or value <= 0
+                   for value in grid_size)):
         raise ValueError("The drawing grid must have a positive width and height.")
+    grid_w, grid_h = grid_size
     img = Image.open(img_path).convert("RGB")
     img = img.resize((grid_w, grid_h), Image.LANCZOS)
 
@@ -559,23 +658,37 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
          click_hold=DEFAULT_CLICK_HOLD, pause_event=None, on_pixel=None,
          automatic=False, on_manual_color=None, duplicate_pass=False):
     _require_runtime_deps("numpy", "pyautogui")
-    x1, y1, x2, y2 = box
+    box = _validate_box(box)
     grid_h, grid_w = idx.shape
-    cw, ch = (x2 - x1) / grid_w, (y2 - y1) / grid_h
     todo = [c for c in range(n_colors)
             if c not in skip and np.any(idx == c)]
     skipped_pixels = int(sum(np.count_nonzero(idx == c) for c in skip))
     total_pixels = int(sum(np.count_nonzero(idx == c) for c in todo))
+    pass_count = 2 if duplicate_pass else 1
+    planned_clicks = total_pixels * pass_count
+    completed_clicks = 0
+
+    def interrupted(reason):
+        log_event("STOP", reason)
+        log_event(
+            "DRAW",
+            f"Interrupted: completed {completed_clicks}/{planned_clicks} "
+            f"pixel clicks; {skipped_pixels} pixels skipped.")
+        return False
+
     log_event(
         "DRAW",
-        f"Starting grid {grid_w}x{grid_h}; {total_pixels} pixels across "
-        f"{len(todo)} colors; skipping {skipped_pixels} pixels.")
+        f"Starting grid {grid_w}x{grid_h} in area {box}; cell size "
+        f"{(box[2] - box[0]) / grid_w:.3f}x"
+        f"{(box[3] - box[1]) / grid_h:.3f} screen pixels; "
+        f"{planned_clicks} planned pixel clicks across {len(todo)} colors "
+        f"({total_pixels} pixels, {pass_count} pass(es)); "
+        f"{skipped_pixels} pixels skipped.")
     draw_all = False
     draw_all_from = None
     for k, ci in enumerate(todo, 1):
         if STOP_EVENT.is_set():
-            log_event("STOP", "Emergency stop received before color drawing.")
-            return
+            return interrupted("Emergency stop received before color drawing.")
         ys, xs = np.where(idx == ci)
         log_event(
             "COLOR",
@@ -588,7 +701,8 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
             if automatic and on_manual_color is not None:
                 manual_color_action = on_manual_color(ci)
                 if not manual_color_action:
-                    return
+                    return interrupted(
+                        f"Color #{ci + 1} confirmation was cancelled.")
                 if manual_color_action == "auto_remaining":
                     manual = False
                     palette_already_selected = True
@@ -611,33 +725,33 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
             ans = ask_yes(msg + "\n  Enter " + options + ": ")
             if ans in (None, "q"):
                 if STOP_EVENT.is_set():
-                    log_event("STOP", "Emergency stop received at prompt.")
-                    return
-                log_event("STOP", "Drawing cancelled at color prompt.")
-                return
+                    return interrupted(
+                        "Emergency stop received at the color prompt.")
+                return interrupted("Drawing cancelled at the color prompt.")
             if ans == "s":
+                skipped_pixels += len(xs)
+                planned_clicks -= len(xs) * pass_count
+                log_event("COLOR", f"Skipped color #{ci + 1}.")
                 continue
             if ans == "a":
                 draw_all = True
                 draw_all_from = k
         if not automatic and (not draw_all or k == draw_all_from):
             if not countdown(3, "  Return to the game window..."):
-                return
+                return interrupted(
+                    f"Countdown cancelled before color #{ci + 1}.")
         if not manual and not palette_already_selected:
             px, py = palette_pts[ci]
             log_event(
                 "PALETTE",
                 f"Selecting game color #{ci + 1} at ({px}, {py}).")
             if not _click(px, py, click_hold, delay, pause_event):
-                log_event("STOP", "Stopped while selecting a palette color.")
-                return
-            if not automatic and STOP_EVENT.wait(0.05):
-                log_event(
-                    "STOP",
+                return interrupted(
                     f"Stopped while selecting palette color #{ci + 1}.")
-                return
+            if not automatic and STOP_EVENT.wait(0.05):
+                return interrupted(
+                    f"Stopped while selecting palette color #{ci + 1}.")
         pixels = sorted(zip(ys, xs))
-        pass_count = 2 if duplicate_pass else 1
         for pass_number in range(pass_count):
             pass_label = (
                 ("first pass" if pass_number == 0 else "duplicate pass")
@@ -648,10 +762,11 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                     f"Color #{ci + 1}: starting {pass_label} "
                     f"({pass_number + 1}/{pass_count}).")
             for pixel_number, (cy, cx) in enumerate(pixels, 1):
-                px = int(x1 + (cx + 0.5) * cw)
-                py = int(y1 + (cy + 0.5) * ch)
+                px, py = cell_center(box, grid_w, grid_h, int(cx), int(cy))
 
                 def pixel_done():
+                    nonlocal completed_clicks
+                    completed_clicks += 1
                     if on_pixel is not None:
                         completed = pass_number * len(xs) + pixel_number
                         on_pixel(
@@ -659,12 +774,9 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
 
                 if not _click(
                         px, py, click_hold, delay, pause_event, pixel_done):
-                    log_event(
-                        "STOP",
-                        f"Stopped before completing color #{ci + 1}, "
-                        f"{pass_label} "
+                    return interrupted(
+                        f"Stopped during color #{ci + 1}, {pass_label} "
                         f"pixel {pixel_number}/{len(xs)} at ({px}, {py}).")
-                    return
                 if (len(xs) <= LOG_PIXEL_INTERVAL
                         or pixel_number == 1
                         or pixel_number % LOG_PIXEL_INTERVAL == 0
@@ -680,7 +792,11 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                     "COLOR",
                     f"Color #{ci + 1}: finished {pass_label}.")
         log_event("COLOR", f"Finished color #{ci + 1}.")
-    log_event("DRAW", "All selected pixels completed.")
+    log_event(
+        "DRAW",
+        f"Completed {completed_clicks}/{planned_clicks} planned pixel clicks; "
+        f"{skipped_pixels} pixels skipped.")
+    return True
 
 
 def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
@@ -691,6 +807,7 @@ def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
         return False
     pyautogui.moveTo(x, y)
     pressed = False
+    released = False
     try:
         pyautogui.mouseDown()
         pressed = True
@@ -705,10 +822,11 @@ def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
     finally:
         if pressed:
             pyautogui.mouseUp()
+            released = True
+    if released and on_click is not None:
+        on_click()
     if STOP_EVENT.is_set():
         return False
-    if on_click is not None:
-        on_click()
     if not _wait_until_running(pause_event):
         return False
     return not STOP_EVENT.wait(delay)
@@ -764,9 +882,14 @@ class DrawingApp:
         self.auto_select_remaining_enabled = tk.BooleanVar(value=False)
         self.duplicate_pass_enabled = tk.BooleanVar(
             value=args.duplicate_pass)
+        self._prepared_image = None
+        self._preview_signature = None
         self.status = tk.StringVar(
             value="Choose an image, drawing area, and palette to get started.")
         self.progress = tk.StringVar(value="Not started")
+        self.grid_summary = tk.StringVar(value="Grid resolution: not set")
+        self.click_estimate = tk.StringVar(
+            value="Estimated pixel clicks: generate a preview")
 
         self._configure_style()
         root.title("Pixel Painting")
@@ -778,6 +901,8 @@ class DrawingApp:
         self.root.bind_all("<MouseWheel>", self._on_mousewheel)
         self.root.bind_all("<Button-4>", self._on_mousewheel)
         self.root.bind_all("<Button-5>", self._on_mousewheel)
+        self._update_grid_summary()
+        self._update_click_estimate()
         self.root.after(80, self._process_events)
 
     def _configure_style(self):
@@ -869,8 +994,10 @@ class DrawingApp:
             panel, text="  1. Source image  ", style="Section.TLabelframe",
             padding=10)
         image_section.grid(row=1, column=0, sticky="ew", pady=5)
-        ttk.Entry(image_section, textvariable=self.image_path).grid(
+        self.image_entry = ttk.Entry(image_section, textvariable=self.image_path)
+        self.image_entry.grid(
             row=0, column=0, sticky="ew", padx=(0, 8))
+        self.image_entry.bind("<KeyRelease>", self._invalidate_preview)
         ttk.Button(image_section, text="Browse...", command=self._choose_image).grid(
             row=0, column=1)
         image_section.grid_columnconfigure(0, weight=1)
@@ -879,12 +1006,19 @@ class DrawingApp:
             panel, text="  2. Drawing settings  ", style="Section.TLabelframe",
             padding=10)
         settings.grid(row=2, column=0, sticky="ew", pady=5)
-        self._add_setting(settings, "Longest edge (cells)", self.grid_count, 0)
-        self._add_setting(settings, "Palette colors", self.color_count, 2)
+        self.grid_entry = self._add_setting(
+            settings, "Longest edge (cells)", self.grid_count, 0)
+        self.grid_entry.bind("<Return>", self._refresh_grid_preview)
+        self.grid_entry.bind("<FocusOut>", self._refresh_grid_preview)
+        self.grid_entry.bind("<KeyRelease>", self._grid_input_changed)
+        self.color_entry = self._add_setting(
+            settings, "Palette colors", self.color_count, 2)
+        self.color_entry.bind("<KeyRelease>", self._palette_count_changed)
         self._add_setting(settings, "Delay (s)", self.delay, 4)
         self._add_setting(settings, "Click hold (s)", self.click_hold, 6)
         ttk.Checkbutton(
-            settings, text="Use dithering", variable=self.use_dither).grid(
+            settings, text="Use dithering", variable=self.use_dither,
+            command=self._invalidate_preview).grid(
                 row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Checkbutton(
             settings, text="Select each game color manually (confirm with F10)",
@@ -899,8 +1033,17 @@ class DrawingApp:
         ttk.Checkbutton(
             settings,
             text="Draw every color twice (repeat its pixels before next color)",
-            variable=self.duplicate_pass_enabled).grid(
+            variable=self.duplicate_pass_enabled,
+            command=self._update_click_estimate).grid(
                 row=3, column=0, columnspan=6, sticky="w", pady=(5, 0))
+        ttk.Label(
+            settings, textvariable=self.grid_summary,
+            style="Progress.TLabel").grid(
+                row=4, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        ttk.Label(
+            settings, textvariable=self.click_estimate,
+            style="Progress.TLabel").grid(
+                row=4, column=3, columnspan=3, sticky="w", pady=(7, 0))
 
         setup = ttk.LabelFrame(
             panel, text="  3. Drawing area and palette  ",
@@ -1017,20 +1160,130 @@ class DrawingApp:
         if preview.width > available_width:
             height = round(preview.height * available_width / preview.width)
             preview = preview.resize(
-                (available_width, height), Image.Resampling.LANCZOS)
+                (available_width, height), Image.Resampling.NEAREST)
         self.preview_image = ImageTk.PhotoImage(preview)
         self.preview_label.configure(image=self.preview_image, text="")
+
+    def _invalidate_preview(self, _event=None):
+        self._prepared_image = None
+        self._preview_signature = None
+        self.preview_source = None
+        self.preview_image = None
+        if hasattr(self, "preview_label"):
+            self.preview_label.configure(
+                image="", text="Settings changed. Generate a new preview.")
+        if hasattr(self, "palette_list"):
+            self._refresh_palette_list()
+        if hasattr(self, "grid_summary"):
+            self._update_grid_summary()
+        if hasattr(self, "click_estimate"):
+            self._update_click_estimate()
+        if hasattr(self, "status"):
+            self._set_status(
+                "Settings changed. Update the preview before drawing.")
+        return None
+
+    def _grid_input_changed(self, _event=None):
+        self._invalidate_preview()
+        return None
+
+    def _palette_count_changed(self, _event=None):
+        self._invalidate_preview()
+        self._set_status(
+            "Palette count changed. Capture a matching game palette before "
+            "previewing or drawing.")
+        return None
+
+    def _refresh_grid_preview(self, _event=None):
+        try:
+            self._update_grid_summary()
+            self._parse_grid_count()
+        except ValueError as exc:
+            self._invalidate_preview()
+            self.grid_summary.set(f"Invalid grid: {exc}")
+            self._update_click_estimate()
+            self._set_status(str(exc))
+            return "break"
+        if (self.image_path.get().strip()
+                and self.config.get("box")
+                and self.config.get("palette_rgb")):
+            self._make_preview()
+        else:
+            self._set_status(
+                "Grid updated. Choose an image, area, and palette to preview.")
+        return "break"
+
+    def _parse_grid_count(self):
+        value = self.grid_count.get().strip()
+        try:
+            grid_count = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "the longest grid edge must be a positive whole number.") from exc
+        if grid_count <= 0:
+            raise ValueError(
+                "the longest grid edge must be a positive whole number.")
+        return grid_count
+
+    def _update_grid_summary(self, idx=None):
+        box = self.config.get("box")
+        if not box:
+            self.grid_summary.set(
+                "Grid resolution: select a drawing area")
+            self._update_click_estimate(idx)
+            return
+        try:
+            max_cells = self._parse_grid_count()
+            grid_w, grid_h = grid_for_box(box, max_cells)
+        except ValueError as exc:
+            self.grid_summary.set(f"Grid resolution: {exc}")
+            self._update_click_estimate(idx)
+            return
+        total_cells = grid_w * grid_h
+        self.grid_summary.set(
+            f"Grid resolution: {grid_w} \u00d7 {grid_h} cells | "
+            f"Total: {total_cells:,} cells")
+        self._update_click_estimate(idx)
+
+    def _update_click_estimate(self, idx=None):
+        if idx is None and self._prepared_image is not None:
+            idx = self._prepared_image["idx"]
+        duplicate_count = 2 if self.duplicate_pass_enabled.get() else 1
+        skipped = self._skipped_color_indices()
+        if idx is not None:
+            pixel_clicks = sum(
+                int(np.count_nonzero(idx == color))
+                for color in range(len(self.config.get("palette_rgb", [])))
+                if color not in skipped)
+            estimate = f"{pixel_clicks * duplicate_count:,}"
+        else:
+            box = self.config.get("box")
+            try:
+                grid_size = grid_for_box(box, self._parse_grid_count())
+                pixel_clicks = grid_size[0] * grid_size[1] * duplicate_count
+                estimate = f"up to {pixel_clicks:,}"
+            except (TypeError, ValueError):
+                estimate = "unavailable"
+        self.click_estimate.set(
+            f"Estimated pixel clicks: {estimate}"
+            f"{' (2 passes)' if duplicate_count == 2 else ''}")
 
     @staticmethod
     def _add_setting(parent, label, variable, column):
         ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w")
-        ttk.Entry(parent, textvariable=variable, width=7).grid(
+        entry = ttk.Entry(parent, textvariable=variable, width=7)
+        entry.grid(
             row=0, column=column + 1, padx=(3, 12))
+        return entry
 
     def _region_description(self):
         box = self.config.get("box")
         if not box:
             return "No drawing area selected."
+        try:
+            box = _validate_box(box)
+        except ValueError:
+            return "Saved drawing area is invalid; select it again."
         return f"Selected area: {box[2] - box[0]} x {box[3] - box[1]} px"
 
     def _refresh_palette_list(self, counts=None, reset_selection=False):
@@ -1057,6 +1310,8 @@ class DrawingApp:
         self.palette_list.configure(height=min(max(len(palette), 3), 8))
         if hasattr(self, "auto_select_remaining_check"):
             self._update_manual_options()
+        if hasattr(self, "click_estimate"):
+            self._update_click_estimate()
 
     def _update_manual_options(self):
         palette_points = self.config.get("palette_pts")
@@ -1086,6 +1341,7 @@ class DrawingApp:
         self.config["skip_colors"] = list(
             map(int, self.palette_list.curselection()))
         self._save_config()
+        self._update_click_estimate()
 
     def _save_config(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as config_file:
@@ -1098,20 +1354,18 @@ class DrawingApp:
                        ("All files", "*.*")])
         if path:
             self.image_path.set(path)
-            self.preview_source = None
-            self.preview_image = None
-            self.preview_label.configure(
-                image="", text="Generate a preview for the selected image.")
-            self._refresh_palette_list()
+            self._invalidate_preview()
 
     def _select_region(self):
         try:
-            self.config["box"] = select_region(self.root)
+            self.config["box"] = _validate_box(select_region(self.root))
+            self._invalidate_preview()
             self._save_config()
             self.region_label.config(text=self._region_description())
             if self.image_path.get().strip() and self.config.get("palette_rgb"):
                 self._make_preview()
             else:
+                self._invalidate_preview()
                 self._set_status("Drawing area selected.")
         except Exception as exc:
             messagebox.showerror("Drawing area selection failed", str(exc))
@@ -1121,17 +1375,30 @@ class DrawingApp:
             count = int(self.color_count.get())
             if not 1 <= count <= 256:
                 raise ValueError("Palette size must be between 1 and 256.")
+            previous_skips = self._skipped_color_indices()
             points, colors = pick_palette(count, self.root)
             self.config["palette_pts"] = points
             self.config["palette_rgb"] = colors
-            self.config["skip_colors"] = []
-            self._refresh_palette_list(reset_selection=True)
+            removed_skips = _preserve_skip_colors(
+                self.config, len(colors))
+            self._invalidate_preview()
+            self._refresh_palette_list()
             self._save_config()
             if self.image_path.get().strip() and self.config.get("box"):
                 self._make_preview()
-            else:
-                self._set_status(
-                    f"Captured {len(colors)} colors from the game.")
+            message = f"Captured {len(colors)} colors from the game."
+            if removed_skips:
+                removed_labels = ", ".join(
+                    f"#{index + 1}" for index in removed_skips)
+                message += (
+                    f" Removed out-of-range skip choices ({removed_labels}); "
+                    "review the remaining skip selections.")
+            elif previous_skips:
+                message += (
+                    f" Preserved {len(previous_skips)} skip selection(s) by "
+                    "palette index; review them against the new palette.")
+            self._set_status(message)
+            log_event("CONFIG", message)
         except Exception as exc:
             messagebox.showerror("Palette capture failed", str(exc))
 
@@ -1145,16 +1412,45 @@ class DrawingApp:
             raise ValueError("Select a drawing area first.")
         if not palette:
             raise ValueError("Capture the game palette first.")
-        max_cells = int(self.grid_count.get())
-        if max_cells <= 0:
-            raise ValueError("The longest grid edge must be greater than zero.")
+        box = _validate_box(box)
+        palette = _validate_palette(palette)
+        try:
+            requested_colors = int(self.color_count.get().strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Palette colors must be a whole number from 1 to 256.") from exc
+        if not 1 <= requested_colors <= 256:
+            raise ValueError("Palette colors must be a whole number from 1 to 256.")
+        if requested_colors != len(palette):
+            raise ValueError(
+                f"The selected palette has {len(palette)} colors, but the "
+                f"setting requests {requested_colors}. Capture the palette "
+                "again to apply this setting.")
+        max_cells = self._parse_grid_count()
         grid_size = grid_for_box(box, max_cells)
-        idx = quantize(path, grid_size, palette, self.use_dither.get())
+        stat = os.stat(path)
+        signature = (
+            os.path.abspath(path), stat.st_size, stat.st_mtime_ns, box,
+            tuple(palette), grid_size, bool(self.use_dither.get()))
+        if (self._prepared_image is not None
+                and self._prepared_image["signature"] == signature):
+            prepared = self._prepared_image
+            return prepared["idx"], prepared["box"], prepared["palette"]
+        idx, grid_size, box, palette = prepare_image(
+            path, box, max_cells, palette, bool(self.use_dither.get()))
+        self._prepared_image = {
+            "signature": signature,
+            "idx": idx,
+            "box": box,
+            "palette": palette,
+            "grid_size": grid_size,
+        }
         return idx, box, palette
 
     def _make_preview(self):
         try:
             idx, _, palette = self._get_image_data()
+            prepared = self._prepared_image
             save_preview(idx, palette, path="preview.png")
             with Image.open("preview.png") as preview_file:
                 self.preview_source = preview_file.copy()
@@ -1162,17 +1458,27 @@ class DrawingApp:
             counts = np.bincount(idx.ravel(), minlength=len(palette))
             self._refresh_palette_list(counts)
             used = int(np.count_nonzero(counts))
+            self._preview_signature = prepared["signature"]
+            self._update_grid_summary(idx)
             self._set_status(
                 f"Preview: {idx.shape[1]} x {idx.shape[0]} cells, "
                 f"{len(palette)} palette colors, {used} colors used.")
+            return True
         except Exception as exc:
+            self._invalidate_preview()
             messagebox.showerror("Preview generation failed", str(exc))
+            return False
 
     def start(self):
         if self.worker is not None and self.worker.is_alive():
             return
         try:
             idx, box, palette = self._get_image_data()
+            if (self._preview_signature
+                    != self._prepared_image["signature"]):
+                if not self._make_preview():
+                    return
+                idx, box, palette = self._get_image_data()
             delay = float(self.delay.get())
             click_hold = float(self.click_hold.get())
             _validate_timing(delay, click_hold)
@@ -1206,6 +1512,8 @@ class DrawingApp:
                 "Capture the palette again or enable manual color selection.")
             return
         self.progress.set("Starting from the first pixel")
+        self._update_grid_summary(idx)
+        self._update_click_estimate(idx)
         self._set_running_controls(True)
         self._set_status(
             "Switch to the drawing app. Confirm manual colors with F10, or "
@@ -1265,13 +1573,15 @@ class DrawingApp:
     def _draw_worker(self, idx, box, palette, palette_points, skip_colors,
                      manual, delay, click_hold, duplicate_pass):
         try:
-            draw(
+            completed = draw(
                 idx, box, palette_points, skip_colors, delay, len(palette),
                 manual,
                 click_hold, self.pause_event, self._pixel_completed,
                 automatic=True, on_manual_color=self._wait_for_manual_color,
                 duplicate_pass=duplicate_pass)
-            state = "Stopped." if STOP_EVENT.is_set() else "Drawing complete."
+            state = (
+                "Drawing complete." if completed
+                else "Drawing stopped before completion.")
             self.events.put(("finished", state))
         except Exception as exc:
             log_event("ERROR", f"Drawing worker failed: {exc}")
@@ -1411,7 +1721,15 @@ class DrawingApp:
 def run_gui(args):
     _require_runtime_deps("tkinter", "Pillow", "numpy", "pyautogui")
     root = tk.Tk()
-    app = DrawingApp(root, args)
+    try:
+        app = DrawingApp(root, args)
+    except (ValueError, json.JSONDecodeError) as exc:
+        messagebox.showerror(
+            "Invalid saved calibration",
+            f"{exc}\n\nThe calibration file was not changed. Correct its "
+            "values or restore a valid backup before continuing.")
+        root.destroy()
+        return
     listener = _start_emergency_listener(
         app.request_pause_toggle, app.request_manual_confirm)
     root.protocol("WM_DELETE_WINDOW", lambda: app.close(listener))
@@ -1463,7 +1781,10 @@ def main():
         run_gui(a)
         return
 
-    cfg = {} if a.recalibrate else _load_config()
+    try:
+        cfg = {} if a.recalibrate else _load_config()
+    except (ValueError, json.JSONDecodeError) as exc:
+        ap.error(f"Saved calibration is invalid: {exc}")
     if cfg:
         saved_colors = len(cfg.get("palette_rgb", []))
         print(f"Reusing the saved configuration with {saved_colors} colors "
@@ -1472,7 +1793,10 @@ def main():
         countdown(
             5, "Step 1: Select the drawing area. Switch to the game; "
                "the screen will be captured in 5 seconds...")
-        cfg["box"] = select_region()
+        try:
+            cfg["box"] = _validate_box(select_region())
+        except ValueError as exc:
+            ap.error(f"Invalid drawing area: {exc}")
 
     manual = a.manual
     if a.palette_hex is not None:
@@ -1509,6 +1833,17 @@ def main():
                "the screen will be captured in 5 seconds...")
         pts, cols = pick_palette(n)
         cfg["palette_pts"], cfg["palette_rgb"] = pts, cols
+    removed_skips = _preserve_skip_colors(
+        cfg, len(cfg.get("palette_rgb", [])))
+    if removed_skips:
+        numbers = ", ".join(str(index + 1) for index in removed_skips)
+        print(
+            "Warning: removed saved skip selections that are outside the "
+            f"new palette ({numbers}). Review the skip list before drawing.")
+    try:
+        cfg = _validate_config(cfg)
+    except ValueError as exc:
+        ap.error(f"Invalid calibration: {exc}")
     with open(CONFIG_FILE, "w", encoding="utf-8") as config_file:
         json.dump(cfg, config_file)
 
@@ -1519,11 +1854,20 @@ def main():
     if pts is None:
         manual = True
 
-    grid_size = grid_for_box(box, a.grid)
+    try:
+        idx, grid_size, box, cols = prepare_image(
+            a.image, box, a.grid, cols, a.dither)
+    except ValueError as exc:
+        ap.error(str(exc))
     print(
         f"Drawing grid: {grid_size[0]} x {grid_size[1]} "
         "(width x height).")
-    idx = quantize(a.image, grid_size, cols, a.dither)
+    log_event(
+        "GRID",
+        f"Resolution={grid_size[0]}x{grid_size[1]} cells; "
+        f"selected area={box}; cell size="
+        f"{(box[2] - box[0]) / grid_size[0]:.3f}x"
+        f"{(box[3] - box[1]) / grid_size[1]:.3f} screen pixels.")
     save_preview(idx, cols)
     counts = np.bincount(idx[idx >= 0].astype(int), minlength=len(cols))
     used_colors = int(np.count_nonzero(counts))
@@ -1549,7 +1893,10 @@ def main():
             except ValueError as exc:
                 print(f"  {exc}")
 
-        total = int(np.sum(idx >= 0))
+        total = sum(
+            int(np.count_nonzero(idx == color))
+            for color in range(len(cols))
+            if color not in skip)
         if a.duplicate_pass:
             total *= 2
             print("Duplicate pass enabled: each color will be drawn twice.")
@@ -1560,11 +1907,13 @@ def main():
             print(
                 "Each color prompts for confirmation; enter a to draw all "
                 "remaining colors.")
-        draw(
+        completed = draw(
             idx, box, pts, skip, a.delay, len(cols), manual, a.click_hold,
             duplicate_pass=a.duplicate_pass)
-        if not STOP_EVENT.is_set():
+        if completed:
             print("Drawing complete.")
+        else:
+            print("Drawing stopped before completion.")
     finally:
         listener.stop()
         listener.join()
