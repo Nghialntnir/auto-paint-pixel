@@ -582,8 +582,16 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
         if manual:
             msg += "\n  >> Select this color in the game first."
             if automatic and on_manual_color is not None:
-                if not on_manual_color(ci):
+                manual_color_action = on_manual_color(ci)
+                if not manual_color_action:
                     return
+                if manual_color_action == "auto_remaining":
+                    manual = False
+                    palette_already_selected = True
+                else:
+                    palette_already_selected = False
+        else:
+            palette_already_selected = False
         if automatic:
             log_event(
                 "DRAW",
@@ -611,7 +619,7 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
         if not automatic and (not draw_all or k == draw_all_from):
             if not countdown(3, "  Return to the game window..."):
                 return
-        if not manual:
+        if not manual and not palette_already_selected:
             px, py = palette_pts[ci]
             log_event(
                 "PALETTE",
@@ -716,6 +724,7 @@ class DrawingApp:
         self.worker = None
         self.last_pixel = None
         self.manual_color_event = None
+        self.auto_select_remaining = False
         try:
             with open(CONFIG_FILE, encoding="utf-8") as config_file:
                 self.config = json.load(config_file)
@@ -899,9 +908,13 @@ class DrawingApp:
             style="Stop.TButton", state="disabled")
         self.stop_button.pack(side="left", padx=6)
         self.manual_selected_button = ttk.Button(
-            controls, text="Color selected in game",
+            controls, text="Confirm color (F10)",
             command=self._confirm_manual_color, state="disabled")
         self.manual_selected_button.pack(side="left", padx=6)
+        self.auto_remaining_button = ttk.Button(
+            controls, text="Auto-select remaining",
+            command=self._auto_select_remaining_colors, state="disabled")
+        self.auto_remaining_button.pack(side="left", padx=6)
         ttk.Label(
             controls, text="F10: Confirm color   |   F11: Pause/Resume   |   F12: Stop",
             style="Progress.TLabel").pack(side="right", padx=(8, 0))
@@ -1123,6 +1136,9 @@ class DrawingApp:
         self.pause_event.set()
         self.last_pixel = None
         self.manual_color_event = None
+        self.auto_select_remaining = False
+        self.manual_selected_button.config(state="disabled")
+        self.auto_remaining_button.config(state="disabled")
         palette_points = self.config.get("palette_pts")
         manual = self.manual.get() or palette_points is None
         active_colors = [
@@ -1146,8 +1162,8 @@ class DrawingApp:
         self.progress.set("Starting from the first pixel")
         self._set_running_controls(True)
         self._set_status(
-            "Switch to the drawing app. In manual-color mode use F10 to "
-            "confirm each swatch; F11 pauses/resumes; F12 stops.")
+            "Switch to the drawing app. Confirm manual colors with F10, or "
+            "auto-select remaining captured colors; F11 pauses; F12 stops.")
         log_event(
             "START",
             f"Prepared grid {idx.shape[1]}x{idx.shape[0]} in area {box}; "
@@ -1156,8 +1172,8 @@ class DrawingApp:
         if manual:
             log_event(
                 "MANUAL",
-                "For each color: choose its game swatch, then press F10 "
-                "to begin drawing that color.")
+                "Choose the first game swatch, then press F10 to confirm or "
+                "auto-select the remaining captured palette colors.")
         self.root.lower()
         log_event(
             "COUNTDOWN",
@@ -1226,15 +1242,36 @@ class DrawingApp:
                 return False
             if event.wait(0.05):
                 self.manual_color_event = None
-                return True
+                return ("auto_remaining" if self.auto_select_remaining
+                        else True)
         return False
 
     def _confirm_manual_color(self):
         if self.manual_color_event is not None:
             self.manual_color_event.set()
             self.manual_selected_button.config(state="disabled")
+            self.auto_remaining_button.config(state="disabled")
             self._set_status("Color confirmed; drawing will continue.")
             log_event("COLOR", "Manual game color selection confirmed.")
+
+    def _auto_select_remaining_colors(self):
+        if self.manual_color_event is None:
+            return
+        palette_points = self.config.get("palette_pts")
+        palette = self.config.get("palette_rgb", [])
+        if not palette_points or len(palette_points) != len(palette):
+            return
+        self.auto_select_remaining = True
+        self.manual_color_event.set()
+        self.manual_selected_button.config(state="disabled")
+        self.auto_remaining_button.config(state="disabled")
+        self._set_status(
+            "Current color confirmed. Remaining colors will be selected "
+            "automatically from the captured palette.")
+        log_event(
+            "MANUAL",
+            "Current color confirmed; automatically selecting all remaining "
+            "captured palette colors.")
 
     def request_manual_confirm(self):
         event = self.manual_color_event
@@ -1266,16 +1303,26 @@ class DrawingApp:
                     self._set_status(value)
                     self._set_running_controls(False)
                     self.manual_selected_button.config(state="disabled")
+                    self.auto_remaining_button.config(state="disabled")
                 elif event == "error":
                     self._set_status("Drawing failed.")
                     self._set_running_controls(False)
                     self.manual_selected_button.config(state="disabled")
+                    self.auto_remaining_button.config(state="disabled")
                     messagebox.showerror("Drawing error", value)
                 elif event == "manual_color":
                     self._set_status(
                         f"Select color #{value} in the game, then click "
-                        "'Color selected in game' or press F10.")
+                        "'Confirm color (F10)'. To continue without confirming "
+                        "each color, choose 'Auto-select remaining'.")
                     self.manual_selected_button.config(state="normal")
+                    palette_points = self.config.get("palette_pts")
+                    palette = self.config.get("palette_rgb", [])
+                    if (palette_points
+                            and len(palette_points) == len(palette)):
+                        self.auto_remaining_button.config(state="normal")
+                    else:
+                        self.auto_remaining_button.config(state="disabled")
                 elif event == "pause_toggle":
                     if self.worker is not None and self.worker.is_alive():
                         if self.pause_event.is_set():
@@ -1312,6 +1359,7 @@ class DrawingApp:
         self.resume_button.config(state="disabled")
         self.stop_button.config(state="disabled")
         self.manual_selected_button.config(state="disabled")
+        self.auto_remaining_button.config(state="disabled")
 
     def request_pause_toggle(self):
         self.events.put(("pause_toggle", None))

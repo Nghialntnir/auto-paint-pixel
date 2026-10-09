@@ -33,8 +33,12 @@ py bangbang_draw.py
 5. Click **Generate preview** and inspect the image and color counts. Select
    any background colors in **Colors to skip** if they should not be painted.
 6. Set the click timing if needed, then click **Start** and switch to the game
-   during the countdown. Press **F10** after selecting each swatch when manual
-   color mode is enabled. Use **F11** or the Pause/Resume buttons to pause, and
+   during the countdown. In manual color mode, select the first swatch and
+   press **F10** to confirm it. To avoid confirming every subsequent color,
+   choose **Auto-select remaining**; Pixel Painting will click the captured
+   swatch positions for each remaining color. This option is available only
+   after capturing the game palette. Otherwise, select each color yourself
+   and press **F10**. Use **F11** or the Pause/Resume buttons to pause, and
    **F12** or Stop to end drawing.
 
 The application also verifies that the game window is active before drawing.
@@ -94,7 +98,7 @@ before starting. For example, increase the hold to 0.1 seconds and the delay to
 | `--dither` | Enable Floyd-Steinberg dithering. |
 | `--delay SECONDS` | Wait after each click (default: `0.02`; finite and `>= 0`). |
 | `--click-hold SECONDS` | Hold the mouse button for each click (default: `0.05`; finite and `> 0`). |
-| `--manual` | Select each game color manually; use F10 in the GUI or confirm in the CLI. |
+| `--manual` | Select game colors manually; in the GUI, use F10 per color or switch to automatic selection for the remaining captured colors. |
 | `--palette-hex COLORS` | Comma-separated `RRGGBB` colors; enables manual color selection. |
 | `--recalibrate` | Select the drawing area and game palette again. |
 
