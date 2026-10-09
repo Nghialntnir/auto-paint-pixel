@@ -177,6 +177,36 @@ class PixelPaintingTests(unittest.TestCase):
             [call_args.args[:2] for call_args in click.call_args_list],
             [(15, 30), (200, 200), (25, 30)])
 
+    def test_duplicate_pass_redraws_color_before_selecting_the_next(self):
+        progress = []
+
+        def complete_click(_x, _y, _hold, _delay, _pause_event, callback=None):
+            if callback is not None:
+                callback()
+            return True
+
+        with (
+            patch.object(pixel_draw, "_require_runtime_deps"),
+            patch.object(pixel_draw, "np", _ArrayOps),
+            patch.object(pixel_draw, "_click", side_effect=complete_click) as click,
+            patch.object(pixel_draw, "log_event"),
+        ):
+            pixel_draw.STOP_EVENT.clear()
+            pixel_draw.draw(
+                _TwoColorGrid(), (10, 20, 30, 40),
+                [(100, 100), (200, 200)], set(), 0.02, 2,
+                click_hold=0.05, automatic=True,
+                on_pixel=lambda *args: progress.append(args),
+                duplicate_pass=True)
+
+        self.assertEqual(
+            [call_args.args[:2] for call_args in click.call_args_list],
+            [(100, 100), (15, 30), (15, 30),
+             (200, 200), (25, 30), (25, 30)])
+        self.assertEqual(
+            [(event[0], event[1], event[2]) for event in progress],
+            [(0, 1, 2), (0, 2, 2), (1, 1, 2), (1, 2, 2)])
+
     def test_skip_color_parser_accepts_multiple_numbers_and_whitespace(self):
         self.assertEqual(pixel_draw._parse_skip_colors(" 1, 3 ", 4),
                          {0, 2})

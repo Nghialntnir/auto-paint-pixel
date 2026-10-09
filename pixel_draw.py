@@ -557,7 +557,7 @@ def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
 # ---------------------------------------------------------------- drawing
 def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
          click_hold=DEFAULT_CLICK_HOLD, pause_event=None, on_pixel=None,
-         automatic=False, on_manual_color=None):
+         automatic=False, on_manual_color=None, duplicate_pass=False):
     _require_runtime_deps("numpy", "pyautogui")
     x1, y1, x2, y2 = box
     grid_h, grid_w = idx.shape
@@ -636,27 +636,49 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                     "STOP",
                     f"Stopped while selecting palette color #{ci + 1}.")
                 return
-        for pixel_number, (cy, cx) in enumerate(sorted(zip(ys, xs)), 1):
-            px = int(x1 + (cx + 0.5) * cw)
-            py = int(y1 + (cy + 0.5) * ch)
-            def pixel_done():
-                if on_pixel is not None:
-                    on_pixel(ci, pixel_number, len(xs), px, py)
+        pixels = sorted(zip(ys, xs))
+        pass_count = 2 if duplicate_pass else 1
+        for pass_number in range(pass_count):
+            pass_label = (
+                ("first pass" if pass_number == 0 else "duplicate pass")
+                if duplicate_pass else "drawing")
+            if duplicate_pass:
+                log_event(
+                    "COLOR",
+                    f"Color #{ci + 1}: starting {pass_label} "
+                    f"({pass_number + 1}/{pass_count}).")
+            for pixel_number, (cy, cx) in enumerate(pixels, 1):
+                px = int(x1 + (cx + 0.5) * cw)
+                py = int(y1 + (cy + 0.5) * ch)
 
-            if not _click(px, py, click_hold, delay, pause_event, pixel_done):
+                def pixel_done():
+                    if on_pixel is not None:
+                        completed = pass_number * len(xs) + pixel_number
+                        on_pixel(
+                            ci, completed, len(xs) * pass_count, px, py)
+
+                if not _click(
+                        px, py, click_hold, delay, pause_event, pixel_done):
+                    log_event(
+                        "STOP",
+                        f"Stopped before completing color #{ci + 1}, "
+                        f"{pass_label} "
+                        f"pixel {pixel_number}/{len(xs)} at ({px}, {py}).")
+                    return
+                if (len(xs) <= LOG_PIXEL_INTERVAL
+                        or pixel_number == 1
+                        or pixel_number % LOG_PIXEL_INTERVAL == 0
+                        or pixel_number == len(xs)):
+                    log_event(
+                        "CLICK",
+                        f"Color #{ci + 1}, "
+                        f"{pass_label} "
+                        f"pixel {pixel_number}/{len(xs)} clicked at "
+                        f"({px}, {py}); hold={click_hold * 1000:.0f}ms.")
+            if duplicate_pass:
                 log_event(
-                    "STOP",
-                    f"Stopped before completing color #{ci + 1}, "
-                    f"pixel {pixel_number}/{len(xs)} at ({px}, {py}).")
-                return
-            if (len(xs) <= LOG_PIXEL_INTERVAL
-                    or pixel_number == 1
-                    or pixel_number % LOG_PIXEL_INTERVAL == 0
-                    or pixel_number == len(xs)):
-                log_event(
-                    "CLICK",
-                    f"Color #{ci + 1}, pixel {pixel_number}/{len(xs)} "
-                    f"clicked at ({px}, {py}); hold={click_hold * 1000:.0f}ms.")
+                    "COLOR",
+                    f"Color #{ci + 1}: finished {pass_label}.")
         log_event("COLOR", f"Finished color #{ci + 1}.")
     log_event("DRAW", "All selected pixels completed.")
 
@@ -740,6 +762,8 @@ class DrawingApp:
         self.use_dither = tk.BooleanVar(value=args.dither)
         self.manual = tk.BooleanVar(value=args.manual)
         self.auto_select_remaining_enabled = tk.BooleanVar(value=False)
+        self.duplicate_pass_enabled = tk.BooleanVar(
+            value=args.duplicate_pass)
         self.status = tk.StringVar(
             value="Choose an image, drawing area, and palette to get started.")
         self.progress = tk.StringVar(value="Not started")
@@ -872,6 +896,11 @@ class DrawingApp:
             variable=self.auto_select_remaining_enabled)
         self.auto_select_remaining_check.grid(
             row=2, column=2, columnspan=4, sticky="w", pady=(5, 0))
+        ttk.Checkbutton(
+            settings,
+            text="Draw every color twice (repeat its pixels before next color)",
+            variable=self.duplicate_pass_enabled).grid(
+                row=3, column=0, columnspan=6, sticky="w", pady=(5, 0))
 
         setup = ttk.LabelFrame(
             panel, text="  3. Drawing area and palette  ",
@@ -1185,7 +1214,8 @@ class DrawingApp:
             "START",
             f"Prepared grid {idx.shape[1]}x{idx.shape[0]} in area {box}; "
             f"palette={len(palette)}, click hold={click_hold * 1000:.0f}ms, "
-            f"delay={delay * 1000:.1f}ms, manual-color-mode={manual}.")
+            f"delay={delay * 1000:.1f}ms, manual-color-mode={manual}, "
+            f"duplicate-pass={self.duplicate_pass_enabled.get()}.")
         if manual:
             log_event(
                 "MANUAL",
@@ -1228,18 +1258,19 @@ class DrawingApp:
         self.worker = threading.Thread(
             target=self._draw_worker,
             args=(idx, box, palette, palette_points, skip_colors, manual,
-                  delay, click_hold),
+                  delay, click_hold, self.duplicate_pass_enabled.get()),
             daemon=True)
         self.worker.start()
 
     def _draw_worker(self, idx, box, palette, palette_points, skip_colors,
-                     manual, delay, click_hold):
+                     manual, delay, click_hold, duplicate_pass):
         try:
             draw(
                 idx, box, palette_points, skip_colors, delay, len(palette),
                 manual,
                 click_hold, self.pause_event, self._pixel_completed,
-                automatic=True, on_manual_color=self._wait_for_manual_color)
+                automatic=True, on_manual_color=self._wait_for_manual_color,
+                duplicate_pass=duplicate_pass)
             state = "Stopped." if STOP_EVENT.is_set() else "Drawing complete."
             self.events.put(("finished", state))
         except Exception as exc:
@@ -1415,6 +1446,9 @@ def main():
     ap.add_argument(
         "--recalibrate", action="store_true",
         help="select the drawing area and palette again")
+    ap.add_argument(
+        "--duplicate-pass", action="store_true",
+        help="draw every color's pixels twice before selecting the next color")
     a = ap.parse_args()
     if a.grid <= 0:
         ap.error("--grid must be greater than zero")
@@ -1516,6 +1550,9 @@ def main():
                 print(f"  {exc}")
 
         total = int(np.sum(idx >= 0))
+        if a.duplicate_pass:
+            total *= 2
+            print("Duplicate pass enabled: each color will be drawn twice.")
         print(f"Approximately {total} clicks.")
         if manual:
             print("Select each color manually; enter y to draw or s to skip.")
@@ -1523,7 +1560,9 @@ def main():
             print(
                 "Each color prompts for confirmation; enter a to draw all "
                 "remaining colors.")
-        draw(idx, box, pts, skip, a.delay, len(cols), manual, a.click_hold)
+        draw(
+            idx, box, pts, skip, a.delay, len(cols), manual, a.click_hold,
+            duplicate_pass=a.duplicate_pass)
         if not STOP_EVENT.is_set():
             print("Drawing complete.")
     finally:
