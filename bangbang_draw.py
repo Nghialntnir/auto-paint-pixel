@@ -16,6 +16,7 @@ Emergency failsafe: move the pointer to the top-left corner of the screen.
 import argparse
 import ctypes
 import json
+import math
 import os
 import queue
 import select
@@ -65,7 +66,8 @@ if pyautogui is not None:
     pyautogui.PAUSE = 0.0
 CONFIG_FILE = "bangbang_config.json"
 STOP_EVENT = threading.Event()
-DEFAULT_CLICK_HOLD = 0.03
+DEFAULT_DELAY = 0.02
+DEFAULT_CLICK_HOLD = 0.05
 LOG_PIXEL_INTERVAL = 100
 LOG_LOCK = threading.Lock()
 
@@ -194,6 +196,22 @@ def _start_emergency_listener(on_pause_toggle=None, on_manual_confirm=None):
     return listener
 
 
+def _scale_point(x, y, scale_x, scale_y):
+    """Convert a screen point between Tk, screenshot, and automation spaces."""
+    return int(x * scale_x), int(y * scale_y)
+
+
+def _capture_palette_sample(x, y, screenshot, screenshot_scale_x,
+                            screenshot_scale_y, automation_scale_x,
+                            automation_scale_y):
+    sample_x, sample_y = _scale_point(
+        x, y, screenshot_scale_x, screenshot_scale_y)
+    sample_x = min(screenshot.width - 1, max(0, sample_x))
+    sample_y = min(screenshot.height - 1, max(0, sample_y))
+    point = _scale_point(x, y, automation_scale_x, automation_scale_y)
+    return point, screenshot.getpixel((sample_x, sample_y))[:3]
+
+
 def _wait_until_running(pause_event):
     while not STOP_EVENT.is_set():
         if pause_event is None or pause_event.wait(0.02):
@@ -288,6 +306,10 @@ def _overlay(title, parent=None):
     root.update()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     scale_x, scale_y = shot.width / sw, shot.height / sh
+    automation_width, automation_height = (
+        pyautogui.size() if pyautogui is not None else (sw, sh))
+    automation_scale_x = automation_width / sw
+    automation_scale_y = automation_height / sh
     bg = ImageTk.PhotoImage(shot.resize((sw, sh)))
     canvas = tk.Canvas(root, width=sw, height=sh, cursor="crosshair",
                        highlightthickness=0)
@@ -297,7 +319,8 @@ def _overlay(title, parent=None):
     canvas.create_text(20, 30, text=title, fill="yellow", anchor="w",
                        font=("Arial", 14, "bold"))
     root.bg = bg
-    return root, canvas, shot, scale_x, scale_y
+    return (root, canvas, shot, scale_x, scale_y,
+            automation_scale_x, automation_scale_y)
 
 
 def _selection_countdown(parent, seconds, title="GET READY TO SELECT",
@@ -356,7 +379,7 @@ def _selection_countdown(parent, seconds, title="GET READY TO SELECT",
 
 def select_region(parent=None):
     try:
-        root, canvas, _shot, sx, sy = _overlay(
+        root, canvas, _shot, _sx, _sy, ax, ay = _overlay(
             "Drag from the TOP-LEFT to the BOTTOM-RIGHT "
             "of the drawing area (ESC = cancel)",
             parent)
@@ -375,8 +398,9 @@ def select_region(parent=None):
         def up(e):
             x0, y0 = state["start"]
             x1, y1 = e.x, e.y
-            state["box"] = (int(min(x0, x1) * sx), int(min(y0, y1) * sy),
-                            int(max(x0, x1) * sx), int(max(y0, y1) * sy))
+            left, top = _scale_point(min(x0, x1), min(y0, y1), ax, ay)
+            right, bottom = _scale_point(max(x0, x1), max(y0, y1), ax, ay)
+            state["box"] = (left, top, right, bottom)
             root.destroy()
 
         canvas.bind("<ButtonPress-1>", down)
@@ -396,20 +420,20 @@ def select_region(parent=None):
 
 def pick_palette(n, parent=None):
     try:
-        root, canvas, shot, sx, sy = _overlay(
+        root, canvas, shot, sx, sy, ax, ay = _overlay(
             f"Click {n} game palette swatches in order (ESC = cancel)",
             parent)
         points, colors = [], []
 
         def click(e):
-            px = min(shot.width - 1, max(0, int(e.x * sx)))
-            py = min(shot.height - 1, max(0, int(e.y * sy)))
-            rgb = shot.getpixel((px, py))[:3]
-            points.append((px, py))
+            point, rgb = _capture_palette_sample(
+                e.x, e.y, shot, sx, sy, ax, ay)
+            points.append(point)
             colors.append(rgb)
             log_event(
                 "PALETTE",
-                f"Captured color {len(points)}/{n} RGB={rgb} at ({px}, {py}).")
+                f"Captured color {len(points)}/{n} RGB={rgb} "
+                f"at ({point[0]}, {point[1]}).")
             canvas.create_oval(e.x - 6, e.y - 6, e.x + 6, e.y + 6,
                                outline="red", width=2)
             canvas.create_text(e.x + 12, e.y - 12, text=str(len(points)),
@@ -654,6 +678,15 @@ def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
     if not _wait_until_running(pause_event):
         return False
     return not STOP_EVENT.wait(delay)
+
+
+def _validate_timing(delay, click_hold):
+    if not math.isfinite(delay) or delay < 0:
+        raise ValueError(
+            "Delay must be a finite number greater than or equal to zero.")
+    if not math.isfinite(click_hold) or click_hold <= 0:
+        raise ValueError(
+            "Click hold must be a finite number greater than zero.")
 
 
 class DrawingApp:
@@ -1064,8 +1097,7 @@ class DrawingApp:
             idx, box, palette = self._get_image_data()
             delay = float(self.delay.get())
             click_hold = float(self.click_hold.get())
-            if delay < 0 or click_hold <= 0:
-                raise ValueError("Delay must be >= 0 and click hold must be > 0.")
+            _validate_timing(delay, click_hold)
         except Exception as exc:
             messagebox.showerror("Cannot start drawing", str(exc))
             return
@@ -1306,11 +1338,11 @@ def main():
         help="palette size, 1..256 (default: prompt, or 12 on Enter)")
     ap.add_argument("--dither", action="store_true", help="enable dithering")
     ap.add_argument(
-        "--delay", type=float, default=0.001,
-        help="seconds between clicks; increase if the game misses clicks")
+        "--delay", type=float, default=DEFAULT_DELAY,
+        help="seconds after each click (default: 0.02; must be finite and >= 0)")
     ap.add_argument(
         "--click-hold", type=float, default=DEFAULT_CLICK_HOLD,
-        help="mouse button hold duration in seconds (default: 0.03)")
+        help="mouse press duration in seconds (default: 0.05; must be finite and > 0)")
     ap.add_argument(
         "--manual", action="store_true",
         help="select each game color manually; the tool only clicks pixels")
@@ -1324,10 +1356,10 @@ def main():
     a = ap.parse_args()
     if a.grid <= 0:
         ap.error("--grid must be greater than zero")
-    if a.delay < 0:
-        ap.error("--delay cannot be negative")
-    if a.click_hold <= 0:
-        ap.error("--click-hold must be greater than zero")
+    try:
+        _validate_timing(a.delay, a.click_hold)
+    except ValueError as exc:
+        ap.error(str(exc))
     if a.colors is not None and not 1 <= a.colors <= 256:
         ap.error("--colors must be between 1 and 256")
 
