@@ -740,6 +740,7 @@ class DrawingApp:
         self.click_hold = tk.StringVar(value=str(args.click_hold))
         self.use_dither = tk.BooleanVar(value=args.dither)
         self.manual = tk.BooleanVar(value=args.manual)
+        self.auto_select_remaining_enabled = tk.BooleanVar(value=False)
         self.status = tk.StringVar(
             value="Choose an image, drawing area, and palette to get started.")
         self.progress = tk.StringVar(value="Not started")
@@ -864,8 +865,14 @@ class DrawingApp:
                 row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Checkbutton(
             settings, text="Select each game color manually (confirm with F10)",
-            variable=self.manual).grid(
-                row=1, column=2, columnspan=3, sticky="w", pady=(8, 0))
+            variable=self.manual,
+            command=self._update_manual_options).grid(
+                row=1, column=2, columnspan=4, sticky="w", pady=(8, 0))
+        self.auto_select_remaining_check = ttk.Checkbutton(
+                settings, text="After first manual color, auto-select the rest",
+            variable=self.auto_select_remaining_enabled)
+        self.auto_select_remaining_check.grid(
+            row=2, column=2, columnspan=4, sticky="w", pady=(5, 0))
 
         setup = ttk.LabelFrame(
             panel, text="  3. Drawing area and palette  ",
@@ -891,33 +898,31 @@ class DrawingApp:
             panel, text="  4. Drawing controls  ", style="Section.TLabelframe",
             padding=10)
         controls.grid(row=4, column=0, sticky="ew", pady=5)
+        button_row = ttk.Frame(controls)
+        button_row.pack(fill="x")
         self.start_button = ttk.Button(
-            controls, text="Start", command=self.start,
+            button_row, text="Start", command=self.start,
             style="Primary.TButton")
         self.start_button.pack(side="left", padx=(0, 6))
         self.pause_button = ttk.Button(
-            controls, text="Pause", command=self.pause,
+            button_row, text="Pause", command=self.pause,
             style="Pause.TButton", state="disabled")
         self.pause_button.pack(side="left", padx=6)
         self.resume_button = ttk.Button(
-            controls, text="Resume", command=self.resume,
+            button_row, text="Resume", command=self.resume,
             style="Primary.TButton", state="disabled")
         self.resume_button.pack(side="left", padx=6)
         self.stop_button = ttk.Button(
-            controls, text="Stop", command=self.stop,
+            button_row, text="Stop", command=self.stop,
             style="Stop.TButton", state="disabled")
         self.stop_button.pack(side="left", padx=6)
         self.manual_selected_button = ttk.Button(
-            controls, text="Confirm color (F10)",
+            button_row, text="Confirm selected color (F10)",
             command=self._confirm_manual_color, state="disabled")
         self.manual_selected_button.pack(side="left", padx=6)
-        self.auto_remaining_button = ttk.Button(
-            controls, text="Auto-select remaining",
-            command=self._auto_select_remaining_colors, state="disabled")
-        self.auto_remaining_button.pack(side="left", padx=6)
         ttk.Label(
-            controls, text="F10: Confirm color   |   F11: Pause/Resume   |   F12: Stop",
-            style="Progress.TLabel").pack(side="right", padx=(8, 0))
+            controls, text="F10: confirm color  |  F11: pause/resume  |  F12: stop",
+            style="Progress.TLabel").pack(anchor="w", pady=(7, 0))
 
         ttk.Label(
             panel, textvariable=self.status, style="Status.TLabel",
@@ -926,12 +931,13 @@ class DrawingApp:
             panel, textvariable=self.progress, style="Progress.TLabel",
             anchor="w").grid(row=6, column=0, sticky="ew")
         palette_section = ttk.LabelFrame(
-            panel, text="  5. Colors to skip (e.g. background)  ",
+            panel, text="  5. Colors to skip (optional)  ",
             style="Section.TLabelframe", padding=8)
         palette_section.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(
             palette_section,
-            text="Select one or more palette colors that should not be drawn.",
+            text=("Click colors to exclude them from drawing. "
+                  "Use Ctrl+click to select multiple colors."),
             style="Preview.TLabel", anchor="w").pack(fill="x", pady=(0, 6))
         list_frame = ttk.Frame(palette_section)
         list_frame.pack(fill="x")
@@ -1021,6 +1027,20 @@ class DrawingApp:
             if index in selected:
                 self.palette_list.selection_set(index)
         self.palette_list.configure(height=min(max(len(palette), 3), 8))
+        if hasattr(self, "auto_select_remaining_check"):
+            self._update_manual_options()
+
+    def _update_manual_options(self):
+        palette_points = self.config.get("palette_pts")
+        palette = self.config.get("palette_rgb", [])
+        has_captured_palette = (
+            bool(palette_points) and len(palette_points) == len(palette))
+        manual_enabled = self.manual.get()
+        self.auto_select_remaining_check.configure(
+            state=("normal" if manual_enabled and has_captured_palette
+                   else "disabled"))
+        if not manual_enabled or not has_captured_palette:
+            self.auto_select_remaining_enabled.set(False)
 
     def _skipped_color_indices(self):
         palette = self.config.get("palette_rgb", [])
@@ -1138,7 +1158,6 @@ class DrawingApp:
         self.manual_color_event = None
         self.auto_select_remaining = False
         self.manual_selected_button.config(state="disabled")
-        self.auto_remaining_button.config(state="disabled")
         palette_points = self.config.get("palette_pts")
         manual = self.manual.get() or palette_points is None
         active_colors = [
@@ -1248,38 +1267,28 @@ class DrawingApp:
 
     def _confirm_manual_color(self):
         if self.manual_color_event is not None:
+            self.auto_select_remaining = (
+                self.auto_select_remaining_enabled.get())
             self.manual_color_event.set()
             self.manual_selected_button.config(state="disabled")
-            self.auto_remaining_button.config(state="disabled")
-            self._set_status("Color confirmed; drawing will continue.")
-            log_event("COLOR", "Manual game color selection confirmed.")
-
-    def _auto_select_remaining_colors(self):
-        if self.manual_color_event is None:
-            return
-        palette_points = self.config.get("palette_pts")
-        palette = self.config.get("palette_rgb", [])
-        if not palette_points or len(palette_points) != len(palette):
-            return
-        self.auto_select_remaining = True
-        self.manual_color_event.set()
-        self.manual_selected_button.config(state="disabled")
-        self.auto_remaining_button.config(state="disabled")
-        self._set_status(
-            "Current color confirmed. Remaining colors will be selected "
-            "automatically from the captured palette.")
-        log_event(
-            "MANUAL",
-            "Current color confirmed; automatically selecting all remaining "
-            "captured palette colors.")
+            if self.auto_select_remaining:
+                self._set_status(
+                    "Color confirmed. Remaining colors will be selected "
+                    "automatically.")
+                log_event(
+                    "MANUAL",
+                    "Current color confirmed; automatically selecting all "
+                    "remaining captured palette colors.")
+            else:
+                self._set_status("Color confirmed; drawing will continue.")
+                log_event("COLOR", "Manual game color selection confirmed.")
 
     def request_manual_confirm(self):
-        event = self.manual_color_event
-        if event is None:
+        if self.manual_color_event is None:
             log_event("MANUAL", "F10 ignored; no color is awaiting confirmation.")
             return
-        event.set()
-        log_event("MANUAL", "F10 confirmed the selected game color.")
+        self.events.put(("manual_confirm", None))
+        log_event("HOTKEY", "Queued manual color confirmation on the GUI thread.")
 
     def _pixel_completed(self, color, number, total, x, y):
         self.last_pixel = (color, number, x, y)
@@ -1303,26 +1312,18 @@ class DrawingApp:
                     self._set_status(value)
                     self._set_running_controls(False)
                     self.manual_selected_button.config(state="disabled")
-                    self.auto_remaining_button.config(state="disabled")
                 elif event == "error":
                     self._set_status("Drawing failed.")
                     self._set_running_controls(False)
                     self.manual_selected_button.config(state="disabled")
-                    self.auto_remaining_button.config(state="disabled")
                     messagebox.showerror("Drawing error", value)
                 elif event == "manual_color":
                     self._set_status(
                         f"Select color #{value} in the game, then click "
-                        "'Confirm color (F10)'. To continue without confirming "
-                        "each color, choose 'Auto-select remaining'.")
+                        "'Confirm selected color (F10)'.")
                     self.manual_selected_button.config(state="normal")
-                    palette_points = self.config.get("palette_pts")
-                    palette = self.config.get("palette_rgb", [])
-                    if (palette_points
-                            and len(palette_points) == len(palette)):
-                        self.auto_remaining_button.config(state="normal")
-                    else:
-                        self.auto_remaining_button.config(state="disabled")
+                elif event == "manual_confirm":
+                    self._confirm_manual_color()
                 elif event == "pause_toggle":
                     if self.worker is not None and self.worker.is_alive():
                         if self.pause_event.is_set():
@@ -1359,7 +1360,6 @@ class DrawingApp:
         self.resume_button.config(state="disabled")
         self.stop_button.config(state="disabled")
         self.manual_selected_button.config(state="disabled")
-        self.auto_remaining_button.config(state="disabled")
 
     def request_pause_toggle(self):
         self.events.put(("pause_toggle", None))
