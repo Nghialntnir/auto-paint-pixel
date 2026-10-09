@@ -689,6 +689,23 @@ def _validate_timing(delay, click_hold):
             "Click hold must be a finite number greater than zero.")
 
 
+def _parse_skip_colors(response, n_colors):
+    """Parse a comma-separated list of 1-based palette colors to skip."""
+    response = response.strip()
+    if not response:
+        return set()
+
+    try:
+        color_numbers = [int(value.strip()) for value in response.split(",")]
+    except ValueError as exc:
+        raise ValueError(
+            f"Enter comma-separated color numbers from 1 to {n_colors}.") from exc
+    if any(not 1 <= number <= n_colors for number in color_numbers):
+        raise ValueError(
+            f"Enter comma-separated color numbers from 1 to {n_colors}.")
+    return {number - 1 for number in color_numbers}
+
+
 class DrawingApp:
     def __init__(self, root, args):
         _require_runtime_deps("Pillow", "tkinter", "numpy", "pyautogui")
@@ -1442,13 +1459,18 @@ def main():
     listener = _start_emergency_listener()
     try:
         print("Press F12 at any time for an emergency stop.")
-        s = _readline_or_stop(
-            "Enter a color number to skip (e.g. 1; leave blank to draw all): "
-        )
-        if s is None:
-            print("Emergency stop (F12).")
-            return
-        skip = {int(s) - 1} if s.isdigit() else set()
+        while True:
+            response = _readline_or_stop(
+                "Enter color numbers to skip (e.g. 1,3; leave blank to draw all): "
+            )
+            if response is None:
+                print("Emergency stop (F12).")
+                return
+            try:
+                skip = _parse_skip_colors(response, len(cols))
+                break
+            except ValueError as exc:
+                print(f"  {exc}")
 
         total = int(np.sum(idx >= 0))
         print(f"Approximately {total} clicks.")
