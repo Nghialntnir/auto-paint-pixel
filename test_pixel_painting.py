@@ -1,5 +1,7 @@
+import queue
+import threading
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 import bangbang_draw
 
@@ -53,6 +55,61 @@ class _Screenshot:
 
 
 class PixelPaintingTests(unittest.TestCase):
+    def test_auto_remaining_checkbox_requires_manual_mode_and_captured_palette(self):
+        app = bangbang_draw.DrawingApp.__new__(bangbang_draw.DrawingApp)
+        app.config = {
+            "palette_rgb": [(0, 0, 0), (255, 255, 255)],
+            "palette_pts": [(100, 100), (200, 200)],
+        }
+        app.manual = Mock()
+        app.auto_select_remaining_check = Mock()
+        app.auto_select_remaining_enabled = Mock()
+
+        app.manual.get.return_value = False
+        app._update_manual_options()
+        app.auto_select_remaining_check.configure.assert_called_with(
+            state="disabled")
+        app.auto_select_remaining_enabled.set.assert_called_with(False)
+
+        app.manual.get.return_value = True
+        app._update_manual_options()
+        app.auto_select_remaining_check.configure.assert_called_with(
+            state="normal")
+
+        app.config["palette_pts"] = None
+        app._update_manual_options()
+        app.auto_select_remaining_check.configure.assert_called_with(
+            state="disabled")
+        app.auto_select_remaining_enabled.set.assert_called_with(False)
+
+    def test_f10_confirmation_is_queued_for_gui_thread(self):
+        app = bangbang_draw.DrawingApp.__new__(bangbang_draw.DrawingApp)
+        app.events = queue.Queue()
+        app.manual_color_event = threading.Event()
+
+        with patch.object(bangbang_draw, "log_event"):
+            app.request_manual_confirm()
+
+        self.assertFalse(app.manual_color_event.is_set())
+        self.assertEqual(app.events.get_nowait(), ("manual_confirm", None))
+
+    def test_confirming_first_manual_color_activates_auto_remaining_mode(self):
+        app = bangbang_draw.DrawingApp.__new__(bangbang_draw.DrawingApp)
+        app.manual_color_event = threading.Event()
+        app.auto_select_remaining_enabled = Mock()
+        app.auto_select_remaining_enabled.get.return_value = True
+        app.manual_selected_button = Mock()
+        app._set_status = Mock()
+
+        with patch.object(bangbang_draw, "log_event"):
+            app._confirm_manual_color()
+
+        self.assertTrue(app.auto_select_remaining)
+        self.assertTrue(app.manual_color_event.is_set())
+        app.manual_selected_button.config.assert_called_once_with(
+            state="disabled")
+        self.assertIn("automatically", app._set_status.call_args.args[0])
+
     def test_manual_mode_can_auto_select_all_remaining_palette_colors(self):
         confirm_calls = []
         with (

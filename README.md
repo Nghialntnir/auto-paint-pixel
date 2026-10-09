@@ -32,14 +32,18 @@ py bangbang_draw.py
    select that color before drawing its pixels.
 5. Click **Generate preview** and inspect the image and color counts. Select
    any background colors in **Colors to skip** if they should not be painted.
-6. Set the click timing if needed, then click **Start** and switch to the game
-   during the countdown. In manual color mode, select the first swatch and
-   press **F10** to confirm it. To avoid confirming every subsequent color,
-   choose **Auto-select remaining**; Pixel Painting will click the captured
-   swatch positions for each remaining color. This option is available only
-   after capturing the game palette. Otherwise, select each color yourself
-   and press **F10**. Use **F11** or the Pause/Resume buttons to pause, and
-   **F12** or Stop to end drawing.
+   Click a color to skip it; use **Ctrl+click** to add or remove colors from
+   the selection. Selected entries are excluded from drawing. This is optional.
+6. Set the click timing if needed. To manually select the first game color and
+   automatically select the rest, enable **Select each game color manually**
+   and **After first manual color, auto-select the rest**. Click **Start**, switch
+   to the game, select the first swatch, then press **F10** (or click
+   **Confirm selected color (F10)**). Pixel Painting draws that color, then
+   clicks the captured palette positions and draws all remaining colors
+   without more confirmations. The auto-select checkbox is enabled only after
+   capturing the game palette. If it is unchecked, select each color and press
+   **F10** before it is drawn. Use **F11** or the Pause/Resume buttons to pause,
+   and **F12** or Stop to end drawing.
 
 The application also verifies that the game window is active before drawing.
 If it cannot focus the game, bring the game to the foreground and retry.
