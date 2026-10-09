@@ -55,7 +55,9 @@ Work through the numbered sections in the window:
 2. **Drawing settings:** Set the number of cells along the grid's longest edge,
    palette size, delay after each click, and mouse-button hold duration.
    Enable dithering if desired. Longer grids create more detail and require
-   more clicks and drawing time.
+   more clicks and drawing time. The palette count is the number of swatches to
+   capture; if you change it, capture a matching palette before previewing or
+   drawing.
    Optionally enable **Draw every color twice** to revisit every pixel in the
    current color immediately after its first pass, before selecting the next
    color. This doubles drawing clicks and is useful when the game occasionally
@@ -64,7 +66,9 @@ Work through the numbered sections in the window:
 3. **Drawing area and palette:** Select the target canvas by dragging from its
    top-left to bottom-right after the countdown. Capture palette colors by
    clicking the center of each game swatch, in order. Captured swatch positions
-   are used to select the corresponding game color while drawing.
+   are used to select the corresponding game color while drawing. Recapturing
+   a palette preserves in-range skipped color numbers; review them against the
+   new palette, as they remain attached to palette positions.
 4. **Preview and skipped colors:** Generate and inspect the preview before
    drawing. The color list reports pixel counts. Click a color to exclude it;
    use Ctrl+click to select or deselect multiple colors. Excluded colors are
@@ -72,6 +76,32 @@ Work through the numbered sections in the window:
    start.
 5. **Drawing controls:** Start drawing, pause or resume, stop, and confirm a
    manually selected color. The app displays its current status and progress.
+
+### Grid resolution and preview
+
+**Longest edge (cells)** sets the number of cells along the longer side of the
+selected drawing rectangle; it is not the total number of cells. Pixel
+Painting scales the shorter side proportionally and rounds it to the nearest
+whole cell, with a minimum of one cell. For example, a 60-cell setting in a
+3:2 landscape area produces a grid of about 60 x 40 cells. The GUI shows the
+final width, height, and total cell count beside the setting.
+
+Press Enter or leave the grid field to validate the value and refresh the
+preview when the image, area, and palette are ready. Invalid or incomplete
+values invalidate the old preview and prevent drawing until corrected. Other
+changes that affect image preparation, such as choosing another image,
+changing the drawing area or palette, or toggling dithering, also require an
+updated preview. Changing the palette-count setting also requires recapturing
+the palette. Start refreshes a stale preview before drawing. The preview and
+drawing use the same quantized cell indices, palette, and grid; the enlarged
+pixel-art preview uses nearest-neighbor scaling.
+
+The selected screen rectangle is treated as half-open: its left and top edges
+are included, while its right and bottom edges are the exclusive boundaries.
+Every grid cell is mapped to an integer screen coordinate at its center using
+the final grid width and height. This keeps clicks inside the selected
+rectangle for portrait, landscape, and non-divisible dimensions. The reported
+grid and selected screen area are also written to the run log.
 
 ### Selecting game colors
 
@@ -85,6 +115,29 @@ and confirm the first game color; Pixel Painting then uses the captured
 positions to choose all remaining colors without further confirmation. This
 option requires a captured game palette. A custom hex palette has no screen
 positions, so its colors must be selected manually.
+
+### Retry pixels with a duplicate pass
+
+Enable **Draw every color twice** in Drawing settings when the target app
+occasionally misses a click. For each color, Pixel Painting completes one pass
+over that color's pixels, returns to the beginning of the same pixel list, and
+clicks every pixel a second time. Only after both passes finish does it select
+the next palette color. For example, it completes both passes for black before
+selecting white.
+
+The retry uses the same pixel coordinates and color; it does not recolor,
+re-quantize, or make a separate pass over the whole image. Skipped colors
+remain skipped. In manual-color mode, select and confirm a color once; both
+passes for that color then run before the app asks for the next color. Drawing
+progress includes both passes. Stop or pause controls remain available while
+either pass is running.
+
+The option is off by default because it approximately doubles the number of
+pixel clicks and drawing time. You can also enable it from the command line:
+
+```powershell
+py pixel_draw.py .\path\to\image.png --duplicate-pass
+```
 
 ### Keyboard controls and safety
 
@@ -169,6 +222,15 @@ increasing `--click-hold` or `--delay`.
   center of each swatch, keeping the same order as the game's palette.
 - **Clicks land outside the canvas:** Select the drawing area again and ensure
   the game window is at the expected size and position.
+- **Regular white gaps remain:** A preview confirms the intended quantized
+  pixels, but cannot establish how the target app processes screen clicks.
+  Check the run log's selected rectangle, grid dimensions, and cell size;
+  verify that the selection excludes unwanted borders and matches the target
+  canvas. DPI/display scaling, window scaling, an internal canvas grid that
+  differs from the chosen resolution, asynchronous input handling, and missed
+  clicks are all possible causes. The app does not infer the target's internal
+  grid or automatically repair gaps. The optional duplicate pass can help with
+  occasional missed clicks, but it does not fix a coordinate or grid mismatch.
 - **Drawing is too slow:** Reduce the longest grid edge or lower the delay.
   A smaller grid means fewer clicks and less detail.
 - **The target misses clicks:** Increase the click hold or delay.
@@ -178,8 +240,9 @@ increasing `--click-hold` or `--delay`.
 ## Project files and generated data
 
 - `pixel_draw.py` - GUI, CLI, image processing, calibration, and drawing.
-- `test_pixel_painting.py` - Unit tests for palette handling, timing, skip
-  colors, manual selection, and hotkeys.
+- `test_pixel_painting.py` - Unit tests for grid geometry, coordinate mapping,
+  calibration validation, palette handling, timing, skip colors, manual
+  selection, duplicate passes, and hotkeys.
 - `instruc/instruc.png` - Optional interface screenshot referenced above.
 - `pixel_config.json` - Local drawing-area, palette, and skipped-color
   calibration.
