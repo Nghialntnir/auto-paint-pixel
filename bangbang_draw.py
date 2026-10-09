@@ -64,6 +64,15 @@ if pyautogui is not None:
     pyautogui.PAUSE = 0.0
 CONFIG_FILE = "bangbang_config.json"
 STOP_EVENT = threading.Event()
+DEFAULT_CLICK_HOLD = 0.03
+LOG_PIXEL_INTERVAL = 100
+LOG_LOCK = threading.Lock()
+
+
+def log_event(category, message):
+    timestamp = time.strftime("%H:%M:%S")
+    with LOG_LOCK:
+        print(f"[{timestamp}] [{category}] {message}", flush=True)
 
 
 def _require_runtime_deps(*deps):
@@ -161,10 +170,12 @@ def _start_emergency_listener(on_pause_toggle=None):
 
     def on_press(key):
         if key == keyboard.Key.f12:
+            log_event("HOTKEY", "F12 pressed; emergency stop requested.")
             STOP_EVENT.set()
         elif key == keyboard.Key.f11 and key not in pressed:
             pressed.add(key)
             if on_pause_toggle is not None:
+                log_event("HOTKEY", "F11 pressed; pause/resume requested.")
                 on_pause_toggle()
 
     def on_release(key):
@@ -180,6 +191,76 @@ def _wait_until_running(pause_event):
         if pause_event is None or pause_event.wait(0.02):
             return not STOP_EVENT.is_set()
     return False
+
+
+def _set_window_no_activate(window):
+    if os.name != "nt":
+        return
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    hwnd = user32.GetAncestor(window.winfo_id(), 2)
+    user32.GetWindowLongW.argtypes = (wintypes.HWND, wintypes.INT)
+    user32.GetWindowLongW.restype = wintypes.LONG
+    user32.SetWindowLongW.argtypes = (
+        wintypes.HWND, wintypes.INT, wintypes.LONG)
+    user32.SetWindowLongW.restype = wintypes.LONG
+    user32.SetWindowPos.argtypes = (
+        wintypes.HWND, wintypes.HWND, wintypes.INT, wintypes.INT,
+        wintypes.INT, wintypes.INT, wintypes.UINT)
+    user32.SetWindowPos.restype = wintypes.BOOL
+    ex_style_index = -20
+    no_activate = 0x08000000
+    tool_window = 0x00000080
+    style = user32.GetWindowLongW(hwnd, ex_style_index)
+    user32.SetWindowLongW(
+        hwnd, ex_style_index, style | no_activate | tool_window)
+    if not user32.SetWindowPos(
+        hwnd, wintypes.HWND(-1), 0, 0, 0, 0,
+        0x0001 | 0x0002 | 0x0010 | 0x0040):
+        raise RuntimeError("Could not display the non-activating countdown.")
+
+
+def _focus_window_at(x, y, own_window=None):
+    if os.name != "nt":
+        return
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    point = wintypes.POINT(int(x), int(y))
+    target = user32.WindowFromPoint(point)
+    target = user32.GetAncestor(target, 2)
+    own_window = (
+        user32.GetAncestor(own_window, 2) if own_window else None)
+    if not target or target == own_window:
+        raise RuntimeError(
+            "No game window was found at the selected palette/drawing "
+            "position. Bring the game to the front and try again.")
+    title_buffer = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(target, title_buffer, len(title_buffer))
+    if user32.GetForegroundWindow() != target:
+        if not user32.SetForegroundWindow(target):
+            raise RuntimeError(
+                "Windows could not activate the game window. Bring the game "
+                "to the front and ensure it runs with the same permissions "
+                "as Pixel Painting.")
+        if user32.GetForegroundWindow() != target:
+            raise RuntimeError(
+                "The game window did not become active. Bring the game to "
+                "the front and try again.")
+    log_event(
+        "FOCUS",
+        f"Target window HWND={target:#x}, title={title_buffer.value!r}, "
+        f"verified at screen position ({x}, {y}).")
 
 
 # -------------------------------------------------------------- screen selection
@@ -215,6 +296,7 @@ def _selection_countdown(parent, seconds, title="GET READY TO SELECT",
                          instruction="Switch to the game; screenshot in",
                          cancel_event=None):
     countdown = tk.Toplevel(parent)
+    countdown.withdraw()
     countdown.title("Pixel Painting - Screen capture")
     countdown.attributes("-topmost", True)
     countdown.resizable(False, False)
@@ -232,6 +314,10 @@ def _selection_countdown(parent, seconds, title="GET READY TO SELECT",
     counter = ttk.Label(countdown, text=str(seconds),
                         style="CountdownNumber.TLabel")
     counter.pack(pady=(0, 8))
+    countdown.update_idletasks()
+    _set_window_no_activate(countdown)
+    countdown.deiconify()
+    countdown.attributes("-topmost", True)
     completed = True
     try:
         countdown.update()
@@ -313,6 +399,9 @@ def pick_palette(n, parent=None):
             rgb = shot.getpixel((px, py))[:3]
             points.append((px, py))
             colors.append(rgb)
+            log_event(
+                "PALETTE",
+                f"Captured color {len(points)}/{n} RGB={rgb} at ({px}, {py}).")
             canvas.create_oval(e.x - 6, e.y - 6, e.x + 6, e.y + 6,
                                outline="red", width=2)
             canvas.create_text(e.x + 12, e.y - 12, text=str(len(points)),
@@ -431,7 +520,7 @@ def save_preview(idx, palette_rgb, path="preview.png", zoom=8):
 
 # ---------------------------------------------------------------- drawing
 def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
-         click_hold=0.04, pause_event=None, on_pixel=None,
+         click_hold=DEFAULT_CLICK_HOLD, pause_event=None, on_pixel=None,
          automatic=False, on_manual_color=None):
     _require_runtime_deps("numpy", "pyautogui")
     x1, y1, x2, y2 = box
@@ -439,13 +528,23 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
     cw, ch = (x2 - x1) / grid_w, (y2 - y1) / grid_h
     todo = [c for c in range(n_colors)
             if c not in skip and np.any(idx == c)]
+    skipped_pixels = int(sum(np.count_nonzero(idx == c) for c in skip))
+    total_pixels = int(sum(np.count_nonzero(idx == c) for c in todo))
+    log_event(
+        "DRAW",
+        f"Starting grid {grid_w}x{grid_h}; {total_pixels} pixels across "
+        f"{len(todo)} colors; skipping {skipped_pixels} pixels.")
     draw_all = False
     draw_all_from = None
     for k, ci in enumerate(todo, 1):
         if STOP_EVENT.is_set():
-            print("\nEmergency stop (F12).")
+            log_event("STOP", "Emergency stop received before color drawing.")
             return
         ys, xs = np.where(idx == ci)
+        log_event(
+            "COLOR",
+            f"Starting color #{ci + 1}: {len(xs)} pixels "
+            f"({k}/{len(todo)} used colors).")
         msg = (f"\n[{k}/{len(todo)} colors with pixels; palette "
                f"#{ci + 1}/{n_colors}]: {len(xs)} pixels.")
         if manual:
@@ -454,9 +553,13 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                 if not on_manual_color(ci):
                     return
         if automatic:
-            print(msg + "\n  Drawing (F12 = stop).")
+            log_event(
+                "DRAW",
+                f"Drawing color #{ci + 1} automatically; F12 = stop.")
         elif draw_all:
-            print(msg + "\n  Drawing automatically (F12 = stop).")
+            log_event(
+                "DRAW",
+                f"Drawing color #{ci + 1} automatically; F12 = stop.")
         else:
             options = "y = draw | s = skip this color | q = quit"
             if not manual:
@@ -464,9 +567,9 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
             ans = ask_yes(msg + "\n  Enter " + options + ": ")
             if ans in (None, "q"):
                 if STOP_EVENT.is_set():
-                    print("Emergency stop (F12).")
+                    log_event("STOP", "Emergency stop received at prompt.")
                     return
-                print("Stopped.")
+                log_event("STOP", "Drawing cancelled at color prompt.")
                 return
             if ans == "s":
                 continue
@@ -474,15 +577,20 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                 draw_all = True
                 draw_all_from = k
         if not automatic and (not draw_all or k == draw_all_from):
-            if not countdown(3, "  Quay lai cua so game..."):
+            if not countdown(3, "  Return to the game window..."):
                 return
         if not manual:
             px, py = palette_pts[ci]
+            log_event(
+                "PALETTE",
+                f"Selecting game color #{ci + 1} at ({px}, {py}).")
             if not _click(px, py, click_hold, delay, pause_event):
-                print("\nEmergency stop (F12).")
+                log_event("STOP", "Stopped while selecting a palette color.")
                 return
             if not automatic and STOP_EVENT.wait(0.05):
-                print("\nEmergency stop (F12).")
+                log_event(
+                    "STOP",
+                    f"Stopped while selecting palette color #{ci + 1}.")
                 return
         for pixel_number, (cy, cx) in enumerate(sorted(zip(ys, xs)), 1):
             px = int(x1 + (cx + 0.5) * cw)
@@ -492,9 +600,21 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
                     on_pixel(ci, pixel_number, len(xs), px, py)
 
             if not _click(px, py, click_hold, delay, pause_event, pixel_done):
-                print("\nEmergency stop (F12).")
+                log_event(
+                    "STOP",
+                    f"Stopped before completing color #{ci + 1}, "
+                    f"pixel {pixel_number}/{len(xs)} at ({px}, {py}).")
                 return
-        print(f"  Finished color #{ci + 1}.")
+            if (len(xs) <= LOG_PIXEL_INTERVAL
+                    or pixel_number == 1
+                    or pixel_number % LOG_PIXEL_INTERVAL == 0
+                    or pixel_number == len(xs)):
+                log_event(
+                    "CLICK",
+                    f"Color #{ci + 1}, pixel {pixel_number}/{len(xs)} "
+                    f"clicked at ({px}, {py}); hold={click_hold * 1000:.0f}ms.")
+        log_event("COLOR", f"Finished color #{ci + 1}.")
+    log_event("DRAW", "All selected pixels completed.")
 
 
 def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
@@ -504,8 +624,10 @@ def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
     if STOP_EVENT.is_set():
         return False
     pyautogui.moveTo(x, y)
-    pyautogui.mouseDown()
+    pressed = False
     try:
+        pyautogui.mouseDown()
+        pressed = True
         deadline = time.monotonic() + click_hold
         while not STOP_EVENT.is_set():
             if pause_event is not None and not pause_event.is_set():
@@ -515,7 +637,8 @@ def _click(x, y, click_hold, delay, pause_event=None, on_click=None):
                 break
             STOP_EVENT.wait(min(remaining, 0.01))
     finally:
-        pyautogui.mouseUp()
+        if pressed:
+            pyautogui.mouseUp()
     if STOP_EVENT.is_set():
         return False
     if on_click is not None:
@@ -955,18 +1078,45 @@ class DrawingApp:
         self._set_running_controls(True)
         self._set_status(
             "Switch to the drawing app. F11 pauses/resumes; F12 stops.")
+        log_event(
+            "START",
+            f"Prepared grid {idx.shape[1]}x{idx.shape[0]} in area {box}; "
+            f"palette={len(palette)}, click hold={click_hold * 1000:.0f}ms, "
+            f"delay={delay * 1000:.1f}ms.")
         self.root.lower()
+        log_event(
+            "COUNTDOWN",
+            "Four-second start countdown; switch to the drawing app now.")
         if not _selection_countdown(
                 self.root, 4, title="SWITCH TO THE DRAWING APP",
                 instruction="Drawing starts in", cancel_event=STOP_EVENT):
             self._set_running_controls(False)
             self._set_status("Drawing stopped before it started.")
+            log_event("STOP", "Drawing cancelled during the start countdown.")
             return
         if STOP_EVENT.is_set():
             self._set_running_controls(False)
             self._set_status("Drawing stopped before it started.")
+            log_event("STOP", "Emergency stop before the first pixel.")
             return
+        target_point = (
+            palette_points[0] if palette_points
+            else ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
+        )
+        try:
+            _focus_window_at(*target_point, own_window=self.root.winfo_id())
+        except RuntimeError as exc:
+            self._set_running_controls(False)
+            self._set_status("Could not activate the game window.")
+            log_event("ERROR", f"Could not activate drawing target: {exc}")
+            messagebox.showerror("Cannot focus game window", str(exc))
+            return
+        time.sleep(0.15)
         skip_colors = self._skipped_color_indices()
+        log_event(
+            "START",
+            f"Drawing begins; excluded colors: "
+            f"{', '.join(f'#{i + 1}' for i in sorted(skip_colors)) or 'none'}.")
         self.worker = threading.Thread(
             target=self._draw_worker,
             args=(idx, box, palette, palette_points, skip_colors, manual,
@@ -985,6 +1135,7 @@ class DrawingApp:
             state = "Stopped." if STOP_EVENT.is_set() else "Drawing complete."
             self.events.put(("finished", state))
         except Exception as exc:
+            log_event("ERROR", f"Drawing worker failed: {exc}")
             self.events.put(("error", str(exc)))
 
     def _wait_for_manual_color(self, color_index):
@@ -1004,6 +1155,7 @@ class DrawingApp:
             self.manual_color_event.set()
             self.manual_selected_button.config(state="disabled")
             self._set_status("Color confirmed; drawing will continue.")
+            log_event("COLOR", "Manual game color selection confirmed.")
 
     def _pixel_completed(self, color, number, total, x, y):
         self.last_pixel = (color, number, x, y)
@@ -1053,6 +1205,7 @@ class DrawingApp:
             self.pause_button.config(state="disabled")
             self.resume_button.config(state="normal")
             self._set_status("Pausing after the current click...")
+            log_event("PAUSE", "Pause requested; current click will be released.")
 
     def resume(self):
         if self.worker is not None and self.worker.is_alive():
@@ -1060,8 +1213,10 @@ class DrawingApp:
             self.pause_button.config(state="normal")
             self.resume_button.config(state="disabled")
             self._set_status("Resuming from the next pixel...")
+            log_event("RESUME", "Drawing resumed from the next pixel.")
 
     def stop(self):
+        log_event("STOP", "Stop requested from the GUI.")
         STOP_EVENT.set()
         self.pause_event.set()
         if self.manual_color_event is not None:
@@ -1115,8 +1270,8 @@ def main():
         "--delay", type=float, default=0.001,
         help="seconds between clicks; increase if the game misses clicks")
     ap.add_argument(
-        "--click-hold", type=float, default=0.005,
-        help="mouse button hold duration in seconds (default: 0.005)")
+        "--click-hold", type=float, default=DEFAULT_CLICK_HOLD,
+        help="mouse button hold duration in seconds (default: 0.03)")
     ap.add_argument(
         "--manual", action="store_true",
         help="select each game color manually; the tool only clicks pixels")
