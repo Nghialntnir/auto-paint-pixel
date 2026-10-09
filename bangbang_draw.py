@@ -8,7 +8,7 @@ Workflow:
   1. Select an image and the on-screen drawing area.
   2. Capture the game's palette by clicking each palette swatch.
   3. Review the generated ``preview.png`` and its color legend.
-  4. Start drawing; pause and resume safely, or stop with F12 at any time.
+  4. Start drawing; use F11 to pause/resume and F12 to stop at any time.
 
 Emergency failsafe: move the pointer to the top-left corner of the screen.
 """
@@ -148,7 +148,7 @@ def _readline_or_stop(prompt):
     return None
 
 
-def _start_emergency_listener():
+def _start_emergency_listener(on_pause_toggle=None):
     try:
         from pynput import keyboard
     except ImportError as exc:
@@ -157,11 +157,20 @@ def _start_emergency_listener():
             "Install the project requirements with 'pip install -r requirements.txt'."
         ) from exc
 
+    pressed = set()
+
     def on_press(key):
         if key == keyboard.Key.f12:
             STOP_EVENT.set()
+        elif key == keyboard.Key.f11 and key not in pressed:
+            pressed.add(key)
+            if on_pause_toggle is not None:
+                on_pause_toggle()
 
-    listener = keyboard.Listener(on_press=on_press)
+    def on_release(key):
+        pressed.discard(key)
+
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
     return listener
 
@@ -202,7 +211,9 @@ def _overlay(title, parent=None):
     return root, canvas, shot, scale_x, scale_y
 
 
-def _selection_countdown(parent, seconds):
+def _selection_countdown(parent, seconds, title="GET READY TO SELECT",
+                         instruction="Switch to the game; screenshot in",
+                         cancel_event=None):
     countdown = tk.Toplevel(parent)
     countdown.title("Pixel Painting - Screen capture")
     countdown.attributes("-topmost", True)
@@ -213,27 +224,32 @@ def _selection_countdown(parent, seconds):
     y = 48
     countdown.geometry(f"{width}x{height}+{x}+{y}")
     ttk.Label(
-        countdown, text="GET READY TO SELECT",
+        countdown, text=title,
         style="CountdownTitle.TLabel").pack(pady=(14, 4))
-    instruction = "Switch to the game; screenshot in"
     ttk.Label(
         countdown, text=instruction,
         style="CountdownHint.TLabel").pack()
     counter = ttk.Label(countdown, text=str(seconds),
                         style="CountdownNumber.TLabel")
     counter.pack(pady=(0, 8))
+    completed = True
     try:
         countdown.update()
         deadline = time.monotonic() + seconds
         remaining = seconds
         while remaining > 0:
             countdown.update()
+            if cancel_event is not None and cancel_event.is_set():
+                completed = False
+                break
             next_remaining = max(
                 0, int(deadline - time.monotonic() + 0.999))
             if next_remaining != remaining:
                 remaining = next_remaining
                 counter.configure(text=str(remaining))
             time.sleep(0.03)
+        if completed:
+            countdown.update_idletasks()
     finally:
         if countdown.winfo_exists():
             countdown.attributes("-topmost", False)
@@ -241,6 +257,7 @@ def _selection_countdown(parent, seconds):
             countdown.update_idletasks()
             countdown.destroy()
         parent.update_idletasks()
+    return completed
 
 
 def select_region(parent=None):
@@ -704,6 +721,9 @@ class DrawingApp:
             controls, text="Color selected in game",
             command=self._confirm_manual_color, state="disabled")
         self.manual_selected_button.pack(side="left", padx=6)
+        ttk.Label(
+            controls, text="F11: Pause/Resume   |   F12: Stop",
+            style="Progress.TLabel").pack(side="right", padx=(8, 0))
 
         ttk.Label(
             panel, textvariable=self.status, style="Status.TLabel",
@@ -711,10 +731,32 @@ class DrawingApp:
         ttk.Label(
             panel, textvariable=self.progress, style="Progress.TLabel",
             anchor="w").grid(row=6, column=0, sticky="ew")
+        palette_section = ttk.LabelFrame(
+            panel, text="  5. Colors to skip (e.g. background)  ",
+            style="Section.TLabelframe", padding=8)
+        palette_section.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            palette_section,
+            text="Select one or more palette colors that should not be drawn.",
+            style="Preview.TLabel", anchor="w").pack(fill="x", pady=(0, 6))
+        list_frame = ttk.Frame(palette_section)
+        list_frame.pack(fill="x")
+        self.palette_list = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, exportselection=False,
+            height=8, font=("Consolas", 10), borderwidth=1,
+            relief="solid", activestyle="none")
+        palette_scrollbar = ttk.Scrollbar(
+            list_frame, orient="vertical", command=self.palette_list.yview)
+        self.palette_list.configure(yscrollcommand=palette_scrollbar.set)
+        self.palette_list.pack(side="left", fill="x", expand=True)
+        palette_scrollbar.pack(side="right", fill="y")
+        self.palette_list.bind("<<ListboxSelect>>", self._save_skipped_colors)
+        self._refresh_palette_list()
+
         preview_section = ttk.LabelFrame(
-            panel, text="  5. Full preview  ", style="Section.TLabelframe",
+            panel, text="  6. Full preview  ", style="Section.TLabelframe",
             padding=8)
-        preview_section.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        preview_section.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.preview_label = ttk.Label(
             preview_section, text="Your complete preview will appear here.",
             style="Preview.TLabel", anchor="center", relief="sunken")
@@ -763,6 +805,46 @@ class DrawingApp:
             return "No drawing area selected."
         return f"Selected area: {box[2] - box[0]} x {box[3] - box[1]} px"
 
+    def _refresh_palette_list(self, counts=None, reset_selection=False):
+        if not hasattr(self, "palette_list"):
+            return
+        palette = self.config.get("palette_rgb", [])
+        selected = set() if reset_selection else self._skipped_color_indices()
+        self.palette_list.delete(0, tk.END)
+        for index, color in enumerate(palette):
+            rgb = tuple(int(channel) for channel in color)
+            hex_color = "#{:02X}{:02X}{:02X}".format(*rgb)
+            suffix = (f" - {int(counts[index])} pixels"
+                      if counts is not None else "")
+            self.palette_list.insert(
+                tk.END, f"  #{index + 1:02d}  {hex_color}{suffix}")
+            luminance = sum(
+                channel * weight for channel, weight in zip(
+                    rgb, (0.299, 0.587, 0.114)))
+            foreground = "#111827" if luminance > 145 else "#FFFFFF"
+            self.palette_list.itemconfigure(
+                index, background=hex_color, foreground=foreground)
+            if index in selected:
+                self.palette_list.selection_set(index)
+        self.palette_list.configure(height=min(max(len(palette), 3), 8))
+
+    def _skipped_color_indices(self):
+        palette = self.config.get("palette_rgb", [])
+        saved = self.config.get("skip_colors", [])
+        if not isinstance(saved, list):
+            return set()
+        return {
+            index for index in saved
+            if type(index) is int and 0 <= index < len(palette)
+        }
+
+    def _save_skipped_colors(self, _event=None):
+        if not hasattr(self, "palette_list"):
+            return
+        self.config["skip_colors"] = list(
+            map(int, self.palette_list.curselection()))
+        self._save_config()
+
     def _save_config(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as config_file:
             json.dump(self.config, config_file)
@@ -774,6 +856,11 @@ class DrawingApp:
                        ("All files", "*.*")])
         if path:
             self.image_path.set(path)
+            self.preview_source = None
+            self.preview_image = None
+            self.preview_label.configure(
+                image="", text="Generate a preview for the selected image.")
+            self._refresh_palette_list()
 
     def _select_region(self):
         try:
@@ -795,6 +882,8 @@ class DrawingApp:
             points, colors = pick_palette(count, self.root)
             self.config["palette_pts"] = points
             self.config["palette_rgb"] = colors
+            self.config["skip_colors"] = []
+            self._refresh_palette_list(reset_selection=True)
             self._save_config()
             if self.image_path.get().strip() and self.config.get("box"):
                 self._make_preview()
@@ -829,9 +918,10 @@ class DrawingApp:
                 self.preview_source = preview_file.copy()
             self._render_preview()
             counts = np.bincount(idx.ravel(), minlength=len(palette))
+            self._refresh_palette_list(counts)
             used = int(np.count_nonzero(counts))
             self._set_status(
-                f"Preview: {idx.shape[1]} x {idx.shape[0]} o, "
+                f"Preview: {idx.shape[1]} x {idx.shape[0]} cells, "
                 f"{len(palette)} palette colors, {used} colors used.")
         except Exception as exc:
             messagebox.showerror("Preview generation failed", str(exc))
@@ -863,22 +953,33 @@ class DrawingApp:
             return
         self.progress.set("Starting from the first pixel")
         self._set_running_controls(True)
-        self._set_status("Starting. Press F12 or Stop for an emergency stop.")
+        self._set_status(
+            "Switch to the drawing app. F11 pauses/resumes; F12 stops.")
+        self.root.lower()
+        if not _selection_countdown(
+                self.root, 4, title="SWITCH TO THE DRAWING APP",
+                instruction="Drawing starts in", cancel_event=STOP_EVENT):
+            self._set_running_controls(False)
+            self._set_status("Drawing stopped before it started.")
+            return
+        if STOP_EVENT.is_set():
+            self._set_running_controls(False)
+            self._set_status("Drawing stopped before it started.")
+            return
+        skip_colors = self._skipped_color_indices()
         self.worker = threading.Thread(
             target=self._draw_worker,
-            args=(idx, box, palette, palette_points, manual, delay, click_hold),
+            args=(idx, box, palette, palette_points, skip_colors, manual,
+                  delay, click_hold),
             daemon=True)
         self.worker.start()
 
-    def _draw_worker(self, idx, box, palette, palette_points, manual,
-                     delay, click_hold):
+    def _draw_worker(self, idx, box, palette, palette_points, skip_colors,
+                     manual, delay, click_hold):
         try:
-            if not countdown(
-                    3, "Switch to the game window...", self.pause_event):
-                self.events.put(("finished", "Stopped."))
-                return
             draw(
-                idx, box, palette_points, set(), delay, len(palette), manual,
+                idx, box, palette_points, skip_colors, delay, len(palette),
+                manual,
                 click_hold, self.pause_event, self._pixel_completed,
                 automatic=True, on_manual_color=self._wait_for_manual_color)
             state = "Stopped." if STOP_EVENT.is_set() else "Drawing complete."
@@ -936,6 +1037,12 @@ class DrawingApp:
                         f"Select color #{value} in the game, then click "
                         "'Color selected in game'.")
                     self.manual_selected_button.config(state="normal")
+                elif event == "pause_toggle":
+                    if self.worker is not None and self.worker.is_alive():
+                        if self.pause_event.is_set():
+                            self.pause()
+                        else:
+                            self.resume()
         except queue.Empty:
             pass
         self.root.after(80, self._process_events)
@@ -964,6 +1071,9 @@ class DrawingApp:
         self.stop_button.config(state="disabled")
         self.manual_selected_button.config(state="disabled")
 
+    def request_pause_toggle(self):
+        self.events.put(("pause_toggle", None))
+
     def _set_running_controls(self, running):
         self.start_button.config(state="disabled" if running else "normal")
         self.pause_button.config(state="normal" if running else "disabled")
@@ -984,7 +1094,7 @@ def run_gui(args):
     _require_runtime_deps("tkinter", "Pillow", "numpy", "pyautogui")
     root = tk.Tk()
     app = DrawingApp(root, args)
-    listener = _start_emergency_listener()
+    listener = _start_emergency_listener(app.request_pause_toggle)
     root.protocol("WM_DELETE_WINDOW", lambda: app.close(listener))
     root.mainloop()
 
