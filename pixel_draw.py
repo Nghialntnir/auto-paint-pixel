@@ -573,6 +573,18 @@ def cell_center(box, grid_w, grid_h, col, row):
     return px, py
 
 
+def grid_exceeds_screen_area(box, grid_size):
+    """Whether grid cells outnumber available screen-coordinate positions."""
+    x1, y1, x2, y2 = _validate_box(box)
+    if (not isinstance(grid_size, (list, tuple)) or len(grid_size) != 2
+            or any(type(value) is not int or value <= 0
+                   for value in grid_size)):
+        raise ValueError(
+            "The drawing grid must have a positive width and height.")
+    grid_w, grid_h = grid_size
+    return grid_w > x2 - x1 or grid_h > y2 - y1
+
+
 def prepare_image(img_path, box, max_cells, palette_rgb, dither):
     """Quantize once with the grid derived from this drawing rectangle."""
     validated_box = _validate_box(box)
@@ -684,6 +696,12 @@ def draw(idx, box, palette_pts, skip, delay, n_colors, manual=False,
         f"{planned_clicks} planned pixel clicks across {len(todo)} colors "
         f"({total_pixels} pixels, {pass_count} pass(es)); "
         f"{skipped_pixels} pixels skipped.")
+    if grid_exceeds_screen_area(box, (grid_w, grid_h)):
+        log_event(
+            "WARNING",
+            f"Grid {grid_w}x{grid_h} exceeds the selected screen area "
+            f"{box[2] - box[0]}x{box[3] - box[1]} pixels; multiple grid "
+            "cells must share click coordinates.")
     draw_all = False
     draw_all_from = None
     for k, ci in enumerate(todo, 1):
@@ -1007,43 +1025,45 @@ class DrawingApp:
             padding=10)
         settings.grid(row=2, column=0, sticky="ew", pady=5)
         self.grid_entry = self._add_setting(
-            settings, "Longest edge (cells)", self.grid_count, 0)
+            settings, "Grid longest edge (cells)", self.grid_count, 0, row=0)
         self.grid_entry.bind("<Return>", self._refresh_grid_preview)
         self.grid_entry.bind("<FocusOut>", self._refresh_grid_preview)
         self.grid_entry.bind("<KeyRelease>", self._grid_input_changed)
         self.color_entry = self._add_setting(
-            settings, "Palette colors", self.color_count, 2)
+            settings, "Palette size (colors)", self.color_count, 3, row=0)
         self.color_entry.bind("<KeyRelease>", self._palette_count_changed)
-        self._add_setting(settings, "Delay (s)", self.delay, 4)
-        self._add_setting(settings, "Click hold (s)", self.click_hold, 6)
+        self._add_setting(
+            settings, "Wait after click (s)", self.delay, 0, row=1)
+        self._add_setting(
+            settings, "Mouse press duration (s)", self.click_hold, 3, row=1)
         ttk.Checkbutton(
             settings, text="Use dithering", variable=self.use_dither,
             command=self._invalidate_preview).grid(
-                row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+                row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Checkbutton(
             settings, text="Select each game color manually (confirm with F10)",
             variable=self.manual,
             command=self._update_manual_options).grid(
-                row=1, column=2, columnspan=4, sticky="w", pady=(8, 0))
+                row=2, column=2, columnspan=4, sticky="w", pady=(8, 0))
         self.auto_select_remaining_check = ttk.Checkbutton(
                 settings, text="After first manual color, auto-select the rest",
             variable=self.auto_select_remaining_enabled)
         self.auto_select_remaining_check.grid(
-            row=2, column=2, columnspan=4, sticky="w", pady=(5, 0))
+            row=3, column=2, columnspan=4, sticky="w", pady=(5, 0))
         ttk.Checkbutton(
             settings,
             text="Draw every color twice (repeat its pixels before next color)",
             variable=self.duplicate_pass_enabled,
             command=self._update_click_estimate).grid(
-                row=3, column=0, columnspan=6, sticky="w", pady=(5, 0))
+                row=4, column=0, columnspan=6, sticky="w", pady=(5, 0))
         ttk.Label(
             settings, textvariable=self.grid_summary,
-            style="Progress.TLabel").grid(
-                row=4, column=0, columnspan=3, sticky="w", pady=(7, 0))
+            style="Progress.TLabel", wraplength=520).grid(
+                row=5, column=0, columnspan=6, sticky="w", pady=(7, 0))
         ttk.Label(
             settings, textvariable=self.click_estimate,
             style="Progress.TLabel").grid(
-                row=4, column=3, columnspan=3, sticky="w", pady=(7, 0))
+                row=6, column=0, columnspan=6, sticky="w", pady=(2, 0))
 
         setup = ttk.LabelFrame(
             panel, text="  3. Drawing area and palette  ",
@@ -1240,9 +1260,12 @@ class DrawingApp:
             self._update_click_estimate(idx)
             return
         total_cells = grid_w * grid_h
+        warning = (
+            "\nWarning: grid is finer than screen pixels; clicks repeat."
+            if grid_exceeds_screen_area(box, (grid_w, grid_h)) else "")
         self.grid_summary.set(
             f"Grid resolution: {grid_w} \u00d7 {grid_h} cells | "
-            f"Total: {total_cells:,} cells")
+            f"Total: {total_cells:,} cells{warning}")
         self._update_click_estimate(idx)
 
     def _update_click_estimate(self, idx=None):
@@ -1269,11 +1292,11 @@ class DrawingApp:
             f"{' (2 passes)' if duplicate_count == 2 else ''}")
 
     @staticmethod
-    def _add_setting(parent, label, variable, column):
-        ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w")
+    def _add_setting(parent, label, variable, column, row=0):
+        ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w")
         entry = ttk.Entry(parent, textvariable=variable, width=7)
         entry.grid(
-            row=0, column=column + 1, padx=(3, 12))
+            row=row, column=column + 1, padx=(3, 12))
         return entry
 
     def _region_description(self):

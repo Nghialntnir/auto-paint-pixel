@@ -1,5 +1,6 @@
 import queue
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -69,11 +70,24 @@ class PixelPaintingTests(unittest.TestCase):
         for box, max_cells in (
                 ((0, 0, 0, 10), 10),
                 ((0, 0, 10, 10), 0),
-                ((0, 0, 10, 10), 1.5)):
+                ((0, 0, 10, 10), -1),
+                ((0, 0, 10, 10), 1.5),
+                ((0, 0, 10, 10), True)):
             with self.subTest(box=box, max_cells=max_cells):
                 with self.assertRaises(ValueError):
                     pixel_draw.grid_for_box(box, max_cells)
 
+    def test_grid_for_box_handles_extreme_aspect_ratios_and_small_canvas(self):
+        cases = (
+            ((0, 0, 10000, 4), 60, (60, 1)),
+            ((0, 0, 4, 10000), 60, (1, 60)),
+            ((0, 0, 3, 2), 1, (1, 1)),
+            ((0, 0, 100, 1), 260, (260, 3)),
+        )
+        for box, max_cells, expected in cases:
+            with self.subTest(box=box, max_cells=max_cells):
+                self.assertEqual(
+                    pixel_draw.grid_for_box(box, max_cells), expected)
     def test_cell_center_maps_first_middle_and_last_in_non_divisible_box(self):
         box = (10, 20, 21, 29)
         self.assertEqual(pixel_draw.cell_center(box, 4, 3, 0, 0), (11, 21))
@@ -98,6 +112,18 @@ class PixelPaintingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inside the drawing grid"):
             pixel_draw.cell_center((0, 0, 5, 5), 2, 2, 2, 0)
 
+    def test_grid_exceeding_screen_area_is_reported_without_changing_grid(self):
+        box = (0, 0, 100, 50)
+        self.assertFalse(pixel_draw.grid_exceeds_screen_area(box, (100, 50)))
+        self.assertTrue(pixel_draw.grid_exceeds_screen_area(box, (101, 50)))
+        self.assertTrue(pixel_draw.grid_exceeds_screen_area(box, (100, 51)))
+        mapped_x = {
+            pixel_draw.cell_center(box, 101, 50, col, 0)[0]
+            for col in range(101)
+        }
+        self.assertLess(len(mapped_x), 101)
+        with self.assertRaises(ValueError):
+            pixel_draw.grid_exceeds_screen_area(box, (0, 10))
     def test_prepare_image_uses_shared_grid_and_box(self):
         expected_indices = object()
         with patch.object(
@@ -112,6 +138,38 @@ class PixelPaintingTests(unittest.TestCase):
         quant.assert_called_once_with(
             "image.png", (10, 5), [(0, 0, 0)], False)
 
+    def test_prepare_image_passes_proportional_grid_to_quantizer(self):
+        cases = (
+            ([0, 0, 10000, 4], 60, (60, 1)),
+            ([0, 0, 4, 10000], 60, (1, 60)),
+            ([0, 0, 3, 2], 1, (1, 1)),
+        )
+        for box, max_cells, expected_grid in cases:
+            with self.subTest(box=box):
+                with patch.object(pixel_draw, "quantize") as quantize:
+                    pixel_draw.prepare_image(
+                        "image.png", box, max_cells, [(0, 0, 0)], False)
+                self.assertEqual(quantize.call_args.args[1], expected_grid)
+
+    def test_quantize_returns_indices_with_grid_height_and_width(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = pixel_draw.os.path.join(temp_dir, "source.png")
+            image = pixel_draw.Image.new("RGB", (4, 2))
+            image.putpixel((0, 0), (0, 0, 0))
+            image.putpixel((1, 0), (0, 0, 0))
+            image.putpixel((2, 0), (255, 255, 255))
+            image.putpixel((3, 0), (255, 255, 255))
+            image.putpixel((0, 1), (0, 0, 0))
+            image.putpixel((1, 1), (0, 0, 0))
+            image.putpixel((2, 1), (255, 255, 255))
+            image.putpixel((3, 1), (255, 255, 255))
+            image.save(image_path)
+
+            indices = pixel_draw.quantize(
+                image_path, (2, 1), [(0, 0, 0), (255, 255, 255)], False)
+
+        self.assertEqual(indices.shape, (1, 2))
+        self.assertEqual(indices.tolist(), [[0, 1]])
     def test_saved_configuration_rejects_invalid_area_and_palette_positions(self):
         with self.assertRaisesRegex(ValueError, "positive width and height"):
             pixel_draw._validate_config({"box": [1, 2, 1, 4]})
@@ -177,6 +235,20 @@ class PixelPaintingTests(unittest.TestCase):
         self.assertIn("10 \u00d7 5 cells", app.grid_summary.set.call_args.args[0])
         app._make_preview.assert_called_once_with()
 
+    def test_grid_summary_warns_when_cells_exceed_screen_positions(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.grid_count = Mock()
+        app.grid_count.get.return_value = "101"
+        app.grid_summary = Mock()
+        app.click_estimate = Mock()
+        app.duplicate_pass_enabled = Mock()
+        app.duplicate_pass_enabled.get.return_value = False
+        app.config = {"box": (0, 0, 100, 50), "palette_rgb": []}
+        app._prepared_image = None
+
+        app._update_grid_summary()
+
+        self.assertIn("clicks repeat", app.grid_summary.set.call_args.args[0])
     def test_palette_recapture_preserves_skips_and_reports_removed_choices(self):
         app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
         app.color_count = Mock()
