@@ -11,18 +11,32 @@ class _SinglePixelGrid:
         return color_index == 0
 
 
+class _ColorMask:
+    def __init__(self, color_index):
+        self.color_index = color_index
+
+
+class _TwoColorGrid:
+    shape = (1, 2)
+
+    def __eq__(self, color_index):
+        return _ColorMask(color_index)
+
+
 class _ArrayOps:
     @staticmethod
     def any(mask):
-        return mask
+        return True
 
     @staticmethod
     def where(mask):
+        if isinstance(mask, _ColorMask):
+            return ([0], [mask.color_index])
         return [0], [0]
 
     @staticmethod
     def count_nonzero(mask):
-        return int(mask)
+        return 1
 
 
 class _Screenshot:
@@ -39,6 +53,27 @@ class _Screenshot:
 
 
 class PixelPaintingTests(unittest.TestCase):
+    def test_manual_mode_can_auto_select_all_remaining_palette_colors(self):
+        confirm_calls = []
+        with (
+            patch.object(bangbang_draw, "_require_runtime_deps"),
+            patch.object(bangbang_draw, "np", _ArrayOps),
+            patch.object(bangbang_draw, "_click", return_value=True) as click,
+            patch.object(bangbang_draw, "log_event"),
+        ):
+            bangbang_draw.STOP_EVENT.clear()
+            bangbang_draw.draw(
+                _TwoColorGrid(), (10, 20, 30, 40),
+                [(100, 100), (200, 200)], set(), 0.02, 2,
+                manual=True, click_hold=0.05, automatic=True,
+                on_manual_color=lambda color: (
+                    confirm_calls.append(color) or "auto_remaining"))
+
+        self.assertEqual(confirm_calls, [0])
+        self.assertEqual(
+            [call_args.args[:2] for call_args in click.call_args_list],
+            [(15, 30), (200, 200), (25, 30)])
+
     def test_skip_color_parser_accepts_multiple_numbers_and_whitespace(self):
         self.assertEqual(bangbang_draw._parse_skip_colors(" 1, 3 ", 4),
                          {0, 2})
