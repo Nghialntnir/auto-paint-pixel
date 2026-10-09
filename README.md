@@ -23,6 +23,8 @@ clicks to draw the result.
 - Lets you skip selected colors so those pixels are left untouched.
 - Manual color selection, including an option to confirm the first color and
   automatically select all remaining captured colors.
+- Optional duplicate pass that redraws each color's pixels once before
+  switching to the next palette color, helping cover missed clicks.
 - Configurable click delay and mouse-button hold duration.
 - Pause, resume, and emergency-stop controls; GUI drawing also verifies the
   target application is active before clicking.
@@ -54,6 +56,11 @@ Work through the numbered sections in the window:
    palette size, delay after each click, and mouse-button hold duration.
    Enable dithering if desired. Longer grids create more detail and require
    more clicks and drawing time.
+   Optionally enable **Draw every color twice** to revisit every pixel in the
+   current color immediately after its first pass, before selecting the next
+   color. This doubles drawing clicks and is useful when the game occasionally
+   misses inputs. It is disabled by default because it approximately doubles
+   drawing time.
 3. **Drawing area and palette:** Select the target canvas by dragging from its
    top-left to bottom-right after the countdown. Capture palette colors by
    clicking the center of each game swatch, in order. Captured swatch positions
@@ -133,6 +140,9 @@ py pixel_draw.py .\path\to\image.png --recalibrate
 
 # Slow down clicks if the target application misses inputs.
 py pixel_draw.py .\path\to\image.png --delay 0.05 --click-hold 0.1
+
+# Draw each color's pixels twice before switching to the next color.
+py pixel_draw.py .\path\to\image.png --duplicate-pass
 ```
 
 ### Options
@@ -148,6 +158,7 @@ py pixel_draw.py .\path\to\image.png --delay 0.05 --click-hold 0.1
 | `--manual` | Select each game color manually; the tool only clicks pixels. |
 | `--palette-hex COLORS` | Comma-separated `RRGGBB` colors; automatically enables manual selection. |
 | `--recalibrate` | Capture a new drawing area and game palette instead of reusing calibration. |
+| `--duplicate-pass` | Draw each color's pixels twice before selecting the next color. |
 
 The GUI and CLI both validate timing values. If the game misses clicks, try
 increasing `--click-hold` or `--delay`.
