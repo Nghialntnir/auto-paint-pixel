@@ -82,12 +82,17 @@ class PixelPaintingTests(unittest.TestCase):
             ((0, 0, 10000, 4), 60, (60, 1)),
             ((0, 0, 4, 10000), 60, (1, 60)),
             ((0, 0, 3, 2), 1, (1, 1)),
-            ((0, 0, 100, 1), 260, (260, 3)),
+            ((0, 0, 100, 1), 260, (100, 1)),
         )
         for box, max_cells, expected in cases:
             with self.subTest(box=box, max_cells=max_cells):
                 self.assertEqual(
                     pixel_draw.grid_for_box(box, max_cells), expected)
+
+    def test_grid_for_box_caps_oversized_resolution_to_screen_coordinates(self):
+        self.assertEqual(
+            pixel_draw.grid_for_box((20, 30, 120, 80), 1000), (100, 50))
+
     def test_cell_center_maps_first_middle_and_last_in_non_divisible_box(self):
         box = (10, 20, 21, 29)
         self.assertEqual(pixel_draw.cell_center(box, 4, 3, 0, 0), (11, 21))
@@ -124,6 +129,7 @@ class PixelPaintingTests(unittest.TestCase):
         self.assertLess(len(mapped_x), 101)
         with self.assertRaises(ValueError):
             pixel_draw.grid_exceeds_screen_area(box, (0, 10))
+
     def test_prepare_image_uses_shared_grid_and_box(self):
         expected_indices = object()
         with patch.object(
@@ -170,6 +176,7 @@ class PixelPaintingTests(unittest.TestCase):
 
         self.assertEqual(indices.shape, (1, 2))
         self.assertEqual(indices.tolist(), [[0, 1]])
+
     def test_saved_configuration_rejects_invalid_area_and_palette_positions(self):
         with self.assertRaisesRegex(ValueError, "positive width and height"):
             pixel_draw._validate_config({"box": [1, 2, 1, 4]})
@@ -200,6 +207,8 @@ class PixelPaintingTests(unittest.TestCase):
         app._prepared_image = {"idx": PixelCounts()}
         app.duplicate_pass_enabled = Mock()
         app.duplicate_pass_enabled.get.return_value = True
+        app.additional_passes = Mock()
+        app.additional_passes.get.return_value = "2"
         app.click_estimate = Mock()
 
         with patch.object(
@@ -208,7 +217,27 @@ class PixelPaintingTests(unittest.TestCase):
             app._update_click_estimate()
 
         app.click_estimate.set.assert_called_once_with(
-            "Estimated pixel clicks: 8 (2 passes)")
+            "Estimated pixel clicks: 12 (3 passes)")
+
+    def test_gui_additional_redraws_default_to_one_and_control_estimate(self):
+        app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
+        app.duplicate_pass_enabled = Mock()
+        app.duplicate_pass_enabled.get.return_value = False
+        app.additional_passes = Mock()
+        app.additional_passes.get.return_value = "1"
+        app.additional_passes_entry = Mock()
+        app._update_click_estimate = Mock()
+
+        app._update_duplicate_pass_controls()
+        app.additional_passes_entry.configure.assert_called_once_with(
+            state="disabled")
+        app._update_click_estimate.assert_called_once_with()
+
+        app.duplicate_pass_enabled.get.return_value = True
+        app._update_duplicate_pass_controls()
+        app.additional_passes_entry.configure.assert_called_with(
+            state="normal")
+        self.assertEqual(app._update_click_estimate.call_count, 2)
 
     def test_grid_enter_or_focus_refreshes_summary_and_preview(self):
         app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
@@ -248,7 +277,19 @@ class PixelPaintingTests(unittest.TestCase):
 
         app._update_grid_summary()
 
-        self.assertIn("clicks repeat", app.grid_summary.set.call_args.args[0])
+        self.assertIn("capped at 100", app.grid_summary.set.call_args.args[0])
+
+    def test_additional_pass_count_validation(self):
+        self.assertEqual(pixel_draw.validate_additional_passes(1), 1)
+        self.assertEqual(
+            pixel_draw.validate_additional_passes(
+                pixel_draw.MAX_ADDITIONAL_PASSES),
+            pixel_draw.MAX_ADDITIONAL_PASSES)
+        for value in (0, -1, 1.5, True, 101):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "Additional redraws"):
+                    pixel_draw.validate_additional_passes(value)
+
     def test_palette_recapture_preserves_skips_and_reports_removed_choices(self):
         app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
         app.color_count = Mock()
@@ -432,6 +473,32 @@ class PixelPaintingTests(unittest.TestCase):
         self.assertEqual(
             [(event[0], event[1], event[2]) for event in progress],
             [(0, 1, 2), (0, 2, 2), (1, 1, 2), (1, 2, 2)])
+
+    def test_additional_passes_redraw_each_color_before_switching(self):
+        def complete_click(_x, _y, _hold, _delay, _pause_event, callback=None):
+            if callback is not None:
+                callback()
+            return True
+
+        with (
+            patch.object(pixel_draw, "_require_runtime_deps"),
+            patch.object(pixel_draw, "np", _ArrayOps),
+            patch.object(
+                pixel_draw, "_click", side_effect=complete_click) as click,
+            patch.object(pixel_draw, "log_event"),
+        ):
+            pixel_draw.STOP_EVENT.clear()
+            completed = pixel_draw.draw(
+                _TwoColorGrid(), (10, 20, 30, 40),
+                [(100, 100), (200, 200)], set(), 0.02, 2,
+                click_hold=0.05, automatic=True, duplicate_pass=True,
+                additional_passes=3)
+
+        self.assertTrue(completed)
+        self.assertEqual(
+            [call_args.args[:2] for call_args in click.call_args_list],
+            [(100, 100), (15, 30), (15, 30), (15, 30), (15, 30),
+             (200, 200), (25, 30), (25, 30), (25, 30), (25, 30)])
 
     def test_interrupted_duplicate_pass_logs_completed_and_planned_clicks(self):
         def click_then_interrupt(
