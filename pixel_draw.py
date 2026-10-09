@@ -1,6 +1,6 @@
 """Convert images to palette-based pixel art and draw them with mouse clicks.
 
-Run ``python bangbang_draw.py`` for the GUI or pass an image path to use the
+Run ``python pixel_draw.py`` for the GUI or pass an image path to use the
 command line. See README.md for setup, workflow, options, and safety controls.
 """
 import argparse
@@ -54,12 +54,26 @@ except ImportError:  # pragma: no cover - image processing is optional at import
 if pyautogui is not None:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE = 0.0
-CONFIG_FILE = "bangbang_config.json"
+CONFIG_FILE = "pixel_config.json"
+LEGACY_CONFIG_FILE = "bangbang_config.json"
 STOP_EVENT = threading.Event()
 DEFAULT_DELAY = 0.02
 DEFAULT_CLICK_HOLD = 0.05
 LOG_PIXEL_INTERVAL = 100
 LOG_LOCK = threading.Lock()
+
+
+def _load_config():
+    """Load the current calibration, falling back to the previous filename."""
+    config_path = (
+        CONFIG_FILE if os.path.exists(CONFIG_FILE)
+        else LEGACY_CONFIG_FILE
+    )
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            return json.load(config_file)
+    except FileNotFoundError:
+        return {}
 
 
 def log_event(category, message):
@@ -165,10 +179,10 @@ def _start_emergency_listener(on_pause_toggle=None, on_manual_confirm=None):
         if key == keyboard.Key.f12:
             log_event("HOTKEY", "F12 pressed; emergency stop requested.")
             STOP_EVENT.set()
-        elif key == keyboard.Key.f11 and key not in pressed:
+        elif key == keyboard.Key.f9 and key not in pressed:
             pressed.add(key)
             if on_pause_toggle is not None:
-                log_event("HOTKEY", "F11 pressed; pause/resume requested.")
+                log_event("HOTKEY", "F9 pressed; pause/resume requested.")
                 on_pause_toggle()
         elif key == keyboard.Key.f10 and key not in pressed:
             pressed.add(key)
@@ -714,11 +728,7 @@ class DrawingApp:
         self.worker = None
         self.manual_color_event = None
         self.auto_select_remaining = False
-        try:
-            with open(CONFIG_FILE, encoding="utf-8") as config_file:
-                self.config = json.load(config_file)
-        except FileNotFoundError:
-            self.config = {}
+        self.config = _load_config()
 
         saved_palette = self.config.get("palette_rgb", [])
         color_count = args.colors or len(saved_palette) or 12
@@ -910,7 +920,7 @@ class DrawingApp:
             command=self._confirm_manual_color, state="disabled")
         self.manual_selected_button.pack(side="left", padx=6)
         ttk.Label(
-            controls, text="F10: confirm color  |  F11: pause/resume  |  F12: stop",
+            controls, text="F10: confirm color  |  F9: pause/resume  |  F12: stop",
             style="Progress.TLabel").pack(anchor="w", pady=(7, 0))
 
         ttk.Label(
@@ -1170,7 +1180,7 @@ class DrawingApp:
         self._set_running_controls(True)
         self._set_status(
             "Switch to the drawing app. Confirm manual colors with F10, or "
-            "auto-select remaining captured colors; F11 pauses; F12 stops.")
+            "auto-select remaining captured colors; F9 pauses; F12 stops.")
         log_event(
             "START",
             f"Prepared grid {idx.shape[1]}x{idx.shape[0]} in area {box}; "
@@ -1419,10 +1429,8 @@ def main():
         run_gui(a)
         return
 
-    cfg = {}
-    if os.path.exists(CONFIG_FILE) and not a.recalibrate:
-        with open(CONFIG_FILE, encoding="utf-8") as config_file:
-            cfg = json.load(config_file)
+    cfg = {} if a.recalibrate else _load_config()
+    if cfg:
         saved_colors = len(cfg.get("palette_rgb", []))
         print(f"Reusing the saved configuration with {saved_colors} colors "
               "(use --colors N to change the palette size).")
