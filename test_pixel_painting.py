@@ -88,7 +88,6 @@ class PixelPaintingTests(unittest.TestCase):
             with self.subTest(box=box, max_cells=max_cells):
                 self.assertEqual(
                     pixel_draw.grid_for_box(box, max_cells), expected)
-
     def test_cell_center_maps_first_middle_and_last_in_non_divisible_box(self):
         box = (10, 20, 21, 29)
         self.assertEqual(pixel_draw.cell_center(box, 4, 3, 0, 0), (11, 21))
@@ -125,7 +124,6 @@ class PixelPaintingTests(unittest.TestCase):
         self.assertLess(len(mapped_x), 101)
         with self.assertRaises(ValueError):
             pixel_draw.grid_exceeds_screen_area(box, (0, 10))
-
     def test_prepare_image_uses_shared_grid_and_box(self):
         expected_indices = object()
         with patch.object(
@@ -172,7 +170,6 @@ class PixelPaintingTests(unittest.TestCase):
 
         self.assertEqual(indices.shape, (1, 2))
         self.assertEqual(indices.tolist(), [[0, 1]])
-
     def test_saved_configuration_rejects_invalid_area_and_palette_positions(self):
         with self.assertRaisesRegex(ValueError, "positive width and height"):
             pixel_draw._validate_config({"box": [1, 2, 1, 4]})
@@ -252,7 +249,6 @@ class PixelPaintingTests(unittest.TestCase):
         app._update_grid_summary()
 
         self.assertIn("clicks repeat", app.grid_summary.set.call_args.args[0])
-
     def test_palette_recapture_preserves_skips_and_reports_removed_choices(self):
         app = pixel_draw.DrawingApp.__new__(pixel_draw.DrawingApp)
         app.color_count = Mock()
