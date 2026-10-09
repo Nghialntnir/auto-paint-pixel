@@ -58,10 +58,11 @@ Work through the numbered sections in the window:
    more clicks and drawing time. The palette count is the number of swatches to
    capture; if you change it, capture a matching palette before previewing or
    drawing.
-   Optionally enable **Draw every color twice** to run a duplicate pass over
-   each color's pixels before switching to the next color. This doubles
-   drawing clicks and is useful when the game occasionally misses inputs. It
-   is disabled by default because it approximately doubles drawing time.
+   Optionally enable **Draw every color twice** to revisit every pixel in the
+   current color immediately after its first pass, before selecting the next
+   color. This doubles drawing clicks and is useful when the game occasionally
+   misses inputs. It is disabled by default because it approximately doubles
+   drawing time.
 3. **Drawing area and palette:** Select the target canvas by dragging from its
    top-left to bottom-right after the countdown. Capture palette colors by
    clicking the center of each game swatch, in order. Captured swatch positions
