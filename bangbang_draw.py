@@ -1,17 +1,7 @@
-"""Pixel Painting converts an image to a palette-based grid and draws it by clicking.
+"""Convert images to palette-based pixel art and draw them with mouse clicks.
 
-Install dependencies with ``pip install -r requirements.txt``.
-Run the GUI with ``python bangbang_draw.py`` or use the CLI:
-``python bangbang_draw.py image.png --grid 60 --dither``.
-
-Workflow:
-  1. Select an image and the on-screen drawing area.
-  2. Capture the game's palette by clicking each palette swatch.
-  3. Review the generated ``preview.png`` and its color legend.
-  4. Start drawing; use F10 to confirm manual colors, F11 to pause/resume,
-     and F12 to stop at any time.
-
-Emergency failsafe: move the pointer to the top-left corner of the screen.
+Run ``python bangbang_draw.py`` for the GUI or pass an image path to use the
+command line. See README.md for setup, workflow, options, and safety controls.
 """
 import argparse
 import ctypes
@@ -722,7 +712,6 @@ class DrawingApp:
         self.pause_event = threading.Event()
         self.pause_event.set()
         self.worker = None
-        self.last_pixel = None
         self.manual_color_event = None
         self.auto_select_remaining = False
         try:
@@ -1154,7 +1143,6 @@ class DrawingApp:
 
         STOP_EVENT.clear()
         self.pause_event.set()
-        self.last_pixel = None
         self.manual_color_event = None
         self.auto_select_remaining = False
         self.manual_selected_button.config(state="disabled")
@@ -1291,7 +1279,6 @@ class DrawingApp:
         log_event("HOTKEY", "Queued manual color confirmation on the GUI thread.")
 
     def _pixel_completed(self, color, number, total, x, y):
-        self.last_pixel = (color, number, x, y)
         self.events.put(
             ("progress", (color + 1, number, total, x, y,
                           not self.pause_event.is_set())))

@@ -1,110 +1,150 @@
 # Pixel Painting
 
-Pixel Painting turns an image into a limited-color pixel grid and draws it in a
-game or drawing app with mouse clicks. The existing `bangbang_draw.py` filename
-is retained so current commands and shortcuts continue to work; the app itself
-is named **Pixel Painting**.
+Turn an image into pixel art and paint it in a game or drawing app. Pixel
+Painting samples the game's palette, maps the image to those colors, previews
+the result, and draws it with mouse clicks.
 
-## Install
+![Pixel Painting interface](instruc/instruc.png)
 
-From the project directory, install the dependencies:
+> Add your interface screenshot as `instruc/instruc.png` to display it here.
+
+## Get started
+
+### 1. Install
+
+From the project folder, install the dependencies:
 
 ```powershell
 py -m pip install -r requirements.txt
 ```
 
-## GUI workflow
+### 2. Launch the app
 
-Open Pixel Painting without an image argument:
+Start the graphical interface:
 
 ```powershell
 py bangbang_draw.py
 ```
 
-1. Choose the source image with **Browse...**.
-2. Set the longest grid edge and the number of palette colors. The default
-   grid edge is 60 cells.
-3. Click **Select drawing area**, switch to the game during the countdown, and
-   drag from the top-left to the bottom-right of the canvas area.
-4. Click **Capture game palette** and click the center of each game color
-   swatch, in the order to use them. Pixel Painting samples each color and
-   records that swatch's screen position. It clicks the recorded position to
-   select that color before drawing its pixels.
-5. Click **Generate preview** and inspect the image and color counts. Select
-   any background colors in **Colors to skip** if they should not be painted.
-   Click a color to skip it; use **Ctrl+click** to add or remove colors from
-   the selection. Selected entries are excluded from drawing. This is optional.
-6. Set the click timing if needed. To manually select the first game color and
-   automatically select the rest, enable **Select each game color manually**
-   and **After first manual color, auto-select the rest**. Click **Start**, switch
-   to the game, select the first swatch, then press **F10** (or click
-   **Confirm selected color (F10)**). Pixel Painting draws that color, then
-   clicks the captured palette positions and draws all remaining colors
-   without more confirmations. The auto-select checkbox is enabled only after
-   capturing the game palette. If it is unchecked, select each color and press
-   **F10** before it is drawn. Use **F11** or the Pause/Resume buttons to pause,
-   and **F12** or Stop to end drawing.
-
-The application also verifies that the game window is active before drawing.
-If it cannot focus the game, bring the game to the foreground and retry.
-PyAutoGUI's emergency failsafe is enabled; moving the pointer to the top-left
-screen corner stops the automation.
-
-## Command-line workflow
-
-Run the CLI with a source image:
+To open the command-line workflow for an image:
 
 ```powershell
-py bangbang_draw.py .\joker.jpg --grid 60 --dither
+py bangbang_draw.py .\path\to\image.png
 ```
 
-The first run guides you through selecting the drawing area and palette. Review
-`preview.png`, enter one or more comma-separated palette color numbers to skip
-(for example, `1,3`), or leave blank to draw all colors. Invalid numbers are
-rejected and prompted again. Confirm each color with `y`. Enter `s` to skip a
-color, `q` to quit, or `a` to draw all remaining colors without further
-confirmation. Switch back to the game during the countdown before drawing
-begins. The `F12` and top-left-corner emergency stops are available while
-drawing.
+Use a path to an image on your computer; example artwork is intentionally not
+bundled in this repository.
 
-Examples:
+## Graphical interface
+
+1. **Choose an image.** Select **Browse...** and open a local PNG, JPEG, BMP,
+   or GIF.
+2. **Set drawing options.** Choose the longest grid edge, the number of game
+   palette colors, and optional dithering. A larger grid produces more detail
+   and more clicks.
+3. **Select the drawing area.** Click **Select drawing area**, switch to the
+   game during the countdown, and drag from the canvas's top-left to its
+   bottom-right corner.
+4. **Capture the palette.** Click **Capture game palette**, then click the
+   center of each game color swatch in order. The app saves each sampled RGB
+   color and its screen position.
+5. **Preview and optionally skip colors.** Click **Generate preview**. The
+   preview shows the mapped image and the pixel count for each color. In
+   **Colors to skip**, click colors you do not want painted; use **Ctrl+click**
+   to add or remove individual selections. Selected colors are excluded from
+   drawing. Skipping is optional.
+6. **Draw.** Click **Start** and switch to the game during the countdown.
+   Pixel Painting verifies the game window is active before sending clicks.
+
+### Manual color selection
+
+Normally, Pixel Painting clicks each captured palette swatch automatically.
+To select colors yourself, enable **Select each game color manually (confirm
+with F10)** in Drawing settings.
+
+- To confirm every color yourself, select the requested swatch in the game
+  each time and press **F10** or click **Confirm selected color (F10)**.
+- To select only the first color yourself, also enable **After first manual
+  color, auto-select the rest**. Select the first swatch and confirm with F10.
+  The app paints that color, then clicks the captured swatch positions and
+  paints all remaining colors without asking you to confirm each one.
+
+The automatic option is available only when a game palette with screen
+positions has been captured. A custom hex palette has no captured positions,
+so its colors must be selected manually.
+
+### Pause and safety controls
+
+| Control | Action |
+| --- | --- |
+| **F10** | Confirm the game color currently selected in manual mode. |
+| **F11** | Pause or resume drawing. |
+| **F12** | Stop drawing immediately. |
+| **Pause / Resume / Stop** | The same controls are available as GUI buttons. |
+| Top-left screen corner | PyAutoGUI emergency failsafe; move the pointer there to stop. |
+
+## Command line
+
+The CLI uses the same saved game calibration and preview output as the GUI:
 
 ```powershell
-# Choose the palette size, increase detail, and enable dithering.
-py bangbang_draw.py .\joker.jpg --grid 80 --colors 12 --dither
-
-# Use a custom RGB palette and select each corresponding game color manually.
-py bangbang_draw.py .\joker.jpg --grid 60 --palette-hex "000000,ffffff,ff0000"
-
-# Re-select the game canvas and palette after moving or resizing the game.
-py bangbang_draw.py .\joker.jpg --recalibrate
-
-# Slow the clicks down if the game misses inputs.
-py bangbang_draw.py .\joker.jpg --delay 0.05 --click-hold 0.1
+py bangbang_draw.py .\path\to\image.png --grid 60 --dither
 ```
 
-## Click timing
+On first use, follow the prompts to select the drawing area and palette. Inspect
+`preview.png` before drawing. When asked which colors to skip, enter
+comma-separated 1-based palette numbers (for example, `1,3`) or leave the
+response blank to draw every color. Invalid values are rejected and prompted
+again.
 
-The default mouse hold is **0.05 seconds**, followed by a **0.02-second delay**
-after each click. These timings give games time to register both color-selection
-and pixel-drawing clicks. `--click-hold` must be finite and greater than zero;
-`--delay` must be finite and nonnegative. The GUI validates the same rules
-before starting. For example, increase the hold to 0.1 seconds and the delay to
-0.05 seconds if a game still misses clicks.
+For each color, enter:
 
-## Command options
+| Input | Action |
+| --- | --- |
+| `y` | Draw this color. |
+| `s` | Skip this color. |
+| `q` | Stop drawing. |
+| `a` | Draw this and all remaining colors without more prompts. |
+
+### Examples
+
+```powershell
+# Increase detail, use 12 game colors, and enable dithering.
+py bangbang_draw.py .\path\to\image.png --grid 80 --colors 12 --dither
+
+# Use a custom palette and select each corresponding game color manually.
+py bangbang_draw.py .\path\to\image.png --palette-hex "000000,ffffff,ff0000"
+
+# Re-capture the drawing area and game palette.
+py bangbang_draw.py .\path\to\image.png --recalibrate
+
+# Slow clicks down if the game misses inputs.
+py bangbang_draw.py .\path\to\image.png --delay 0.05 --click-hold 0.1
+```
+
+## Options
 
 | Option | Description |
 | --- | --- |
 | `image` | Source image path. Omit it to open the GUI. |
 | `--grid N` | Cells along the longest edge of the drawing area (default: `60`). |
-| `--colors N` | Palette size from `1` to `256`. If omitted, the CLI prompts; Enter selects `12`. |
-| `--dither` | Enable Floyd-Steinberg dithering. |
-| `--delay SECONDS` | Wait after each click (default: `0.02`; finite and `>= 0`). |
-| `--click-hold SECONDS` | Hold the mouse button for each click (default: `0.05`; finite and `> 0`). |
-| `--manual` | Select game colors manually; in the GUI, use F10 per color or switch to automatic selection for the remaining captured colors. |
-| `--palette-hex COLORS` | Comma-separated `RRGGBB` colors; enables manual color selection. |
-| `--recalibrate` | Select the drawing area and game palette again. |
+| `--colors N` | Palette size, from `1` to `256`. If omitted, the CLI prompts; Enter selects `12`. |
+| `--dither` | Apply Floyd-Steinberg dithering. |
+| `--delay SECONDS` | Wait after each click (default: `0.02`; finite and nonnegative). |
+| `--click-hold SECONDS` | Hold the mouse button for each click (default: `0.05`; finite and greater than zero). |
+| `--manual` | Select game colors manually. |
+| `--palette-hex COLORS` | Comma-separated `RRGGBB` values; enables manual color selection. |
+| `--recalibrate` | Capture a new drawing area and game palette. |
 
-The saved drawing area, palette, and skipped-color settings remain in
-`bangbang_config.json` for compatibility with existing installations.
+If the game misses clicks, increase `--click-hold` or `--delay`. The same
+timing limits are enforced in both the CLI and GUI.
+
+## Project files
+
+- `bangbang_draw.py` - GUI, CLI, image processing, and drawing automation.
+- `instruc/` - Place the interface screenshot here as `instruc.png`.
+- `test_pixel_painting.py` - Focused unit tests.
+- `bangbang_config.json` - Local drawing-area and palette calibration.
+
+Calibration and generated previews are machine-specific/runtime data; the
+preview is generated as `preview.png` when you create one.
