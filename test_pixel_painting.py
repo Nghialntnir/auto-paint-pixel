@@ -39,6 +39,19 @@ class _Screenshot:
 
 
 class PixelPaintingTests(unittest.TestCase):
+    def test_skip_color_parser_accepts_multiple_numbers_and_whitespace(self):
+        self.assertEqual(bangbang_draw._parse_skip_colors(" 1, 3 ", 4),
+                         {0, 2})
+
+    def test_skip_color_parser_accepts_blank_response(self):
+        self.assertEqual(bangbang_draw._parse_skip_colors("  ", 4), set())
+
+    def test_skip_color_parser_rejects_invalid_or_out_of_range_numbers(self):
+        for response in ("abc", "1,,2", "0", "5", "-1"):
+            with self.subTest(response=response):
+                with self.assertRaisesRegex(ValueError, "from 1 to 4"):
+                    bangbang_draw._parse_skip_colors(response, 4)
+
     def test_overlay_points_scale_to_automation_coordinates(self):
         self.assertEqual(bangbang_draw._scale_point(400, 300, 2, 1.5),
                          (800, 450))

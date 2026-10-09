@@ -51,11 +51,13 @@ py bangbang_draw.py .\joker.jpg --grid 60 --dither
 ```
 
 The first run guides you through selecting the drawing area and palette. Review
-`preview.png`, enter any palette color number to skip (or leave blank to draw
-all), and confirm each color with `y`. Enter `s` to skip a color, `q` to quit,
-or `a` to draw all remaining colors without further confirmation. Switch back
-to the game during the countdown before drawing begins. The `F12` and
-top-left-corner emergency stops are available while drawing.
+`preview.png`, enter one or more comma-separated palette color numbers to skip
+(for example, `1,3`), or leave blank to draw all colors. Invalid numbers are
+rejected and prompted again. Confirm each color with `y`. Enter `s` to skip a
+color, `q` to quit, or `a` to draw all remaining colors without further
+confirmation. Switch back to the game during the countdown before drawing
+begins. The `F12` and top-left-corner emergency stops are available while
+drawing.
 
 Examples:
 
